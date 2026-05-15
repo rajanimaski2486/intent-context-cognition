@@ -1,0 +1,5 @@
+requests
+openai
+opensearch-py
+python-dotenv
+tqdm
