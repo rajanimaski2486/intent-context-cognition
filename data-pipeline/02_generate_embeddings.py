@@ -24,7 +24,7 @@ load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", ".env.loca
 
 PIPELINE_DIR = os.path.dirname(__file__)
 IMAGES_IN = os.path.join(PIPELINE_DIR, "pexels_images.jsonl")
-IMAGES_OUT = os.path.join(PIPELINE_DIR, "pexels_images_embedded.jsonl")
+IMAGES_OUT = os.path.join(PIPELINE_DIR, "pexels_images_embedded.jsonl")  # also used as checkpoint
 QUERIES_IN = os.path.join(PIPELINE_DIR, "..", "src", "data", "queries.json")
 QUERIES_OUT = os.path.join(PIPELINE_DIR, "..", "src", "data", "queries.json")
 
@@ -41,21 +41,39 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
     return [item.embedding for item in response.data]
 
 
-def embed_images(images: list[dict]) -> list[dict]:
-    results = []
-    pbar = tqdm(total=len(images), desc="embedding images", unit="img")
+def _image_text(img: dict) -> str:
+    text = " ".join(filter(None, [img["title"], img["description"], img["tags"]])).strip()
+    return text or "image"
 
-    for i in range(0, len(images), BATCH_SIZE):
-        batch = images[i : i + BATCH_SIZE]
-        texts = [
-            " ".join(filter(None, [img["title"], img["description"], img["tags"]]))
-            for img in batch
-        ]
-        vectors = embed_texts(texts)
-        for img, vec in zip(batch, vectors):
-            results.append({**img, "dense_vector": vec})
-        pbar.update(len(batch))
-        time.sleep(RATE_LIMIT_PAUSE)
+
+def embed_images(images: list[dict]) -> list[dict]:
+    # resume from checkpoint if it exists
+    done_ids: set[str] = set()
+    results: list[dict] = []
+    if os.path.exists(IMAGES_OUT):
+        with open(IMAGES_OUT, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    rec = json.loads(line)
+                    done_ids.add(rec["image_id"])
+                    results.append(rec)
+        print(f"Resuming: {len(done_ids)} images already embedded.")
+
+    remaining = [img for img in images if img["image_id"] not in done_ids]
+    pbar = tqdm(total=len(images), initial=len(done_ids), desc="embedding images", unit="img")
+
+    with open(IMAGES_OUT, "a", encoding="utf-8") as out:
+        for i in range(0, len(remaining), BATCH_SIZE):
+            batch = remaining[i : i + BATCH_SIZE]
+            texts = [_image_text(img) for img in batch]
+            vectors = embed_texts(texts)
+            for img, vec in zip(batch, vectors):
+                rec = {**img, "dense_vector": vec}
+                results.append(rec)
+                out.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            pbar.update(len(batch))
+            time.sleep(RATE_LIMIT_PAUSE)
 
     pbar.close()
     return results
@@ -112,11 +130,7 @@ def main() -> None:
     print(f"Loaded {len(images)} images.")
 
     embedded_images = embed_images(images)
-
-    with open(IMAGES_OUT, "w", encoding="utf-8") as f:
-        for img in embedded_images:
-            f.write(json.dumps(img, ensure_ascii=False) + "\n")
-    print(f"Saved embedded images → {IMAGES_OUT}")
+    print(f"Embedded {len(embedded_images)} images → {IMAGES_OUT}")
 
     # --- queries ---
     print(f"\nLoading queries from {QUERIES_IN}...")
