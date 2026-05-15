@@ -34,6 +34,9 @@ yarn-error.log*
 .env*
 !.env.example
 
+# data pipeline artifacts
+data-pipeline/*.jsonl
+
 # vercel
 .vercel
 
