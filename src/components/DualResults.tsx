@@ -82,7 +82,7 @@ export default function DualResults({ legacy, discovery, loading, precisionScore
         precisionScore={precisionScore}
       />
       <Panel
-        label="Reveal Discovery"
+        label="Generative Discovery"
         sublabel="Semantic · vector · session"
         results={discovery}
         loading={loading}
