@@ -1,12 +1,18 @@
 import type { ImageResult } from "@/app/api/search/route";
+import ScoreOverlay from "./ScoreOverlay";
 
-export default function ImageCard({ image }: { image: ImageResult }) {
+interface Props {
+  image: ImageResult;
+  variant: "legacy" | "discovery";
+}
+
+export default function ImageCard({ image, variant }: Props) {
   return (
     <a
       href={image.pexels_url}
       target="_blank"
       rel="noopener noreferrer"
-      className="group block rounded-md overflow-hidden bg-zinc-900 border border-zinc-800 hover:border-zinc-600 transition-colors"
+      className="group relative block rounded-md overflow-hidden bg-zinc-900 border border-zinc-800 hover:border-zinc-600 transition-colors"
     >
       {image.thumbnail_url ? (
         // eslint-disable-next-line @next/next/no-img-element
@@ -21,6 +27,7 @@ export default function ImageCard({ image }: { image: ImageResult }) {
           No image
         </div>
       )}
+      <ScoreOverlay score={image.score} variant={variant} />
       <div className="px-2 py-1.5">
         <p className="text-xs text-zinc-300 truncate leading-snug">
           {image.title || "Untitled"}

@@ -1,11 +1,11 @@
 """
-Delete + recreate icc_images index, then bulk-index all standard images.
+Delete + recreate icc_images_ext index, then bulk-index all extended images.
 
-Reads:  pexels_images_embedded.jsonl
-Index:  icc_images  (kNN, 1536-dim cosine similarity)
+Reads:  pexels_images_ext_embedded.jsonl
+Index:  icc_images_ext  (kNN, 256-dim cosine similarity)
 
-Run: python 03_index_opensearch.py
-NOTE: This script only touches icc_images. Never touches icc_images_ext.
+Run: python 06_index_opensearch_extended.py
+NOTE: This script only touches icc_images_ext. Never touches icc_images.
 """
 
 import json
@@ -18,8 +18,9 @@ from tqdm import tqdm
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", ".env.local"))
 
 PIPELINE_DIR = os.path.dirname(__file__)
-IMAGES_FILE = os.path.join(PIPELINE_DIR, "pexels_images_embedded.jsonl")
-INDEX_NAME = "icc_images"
+IMAGES_FILE = os.path.join(PIPELINE_DIR, "pexels_images_ext_embedded.jsonl")
+INDEX_NAME = "icc_images_ext"
+EXPECTED_COUNT = 20000
 BATCH_SIZE = 500
 
 INDEX_BODY = {
@@ -43,7 +44,7 @@ INDEX_BODY = {
             "height":        {"type": "integer"},
             "dense_vector": {
                 "type": "knn_vector",
-                "dimension": 1536,
+                "dimension": 256,
                 "method": {
                     "name": "hnsw",
                     "space_type": "cosinesimil",
@@ -57,9 +58,7 @@ INDEX_BODY = {
 
 
 def build_client() -> OpenSearch:
-    url = os.environ["OPENSEARCH_URL"]
-    # parse host and port from URL like https://host:port
-    url = url.rstrip("/")
+    url = os.environ["OPENSEARCH_URL"].rstrip("/")
     if url.startswith("https://"):
         host = url[len("https://"):]
         use_ssl = True
@@ -114,6 +113,11 @@ def main() -> None:
                 images.append(json.loads(line))
     print(f"Loaded {len(images)} images.")
 
+    if images:
+        vec_len = len(images[0].get("dense_vector", []))
+        if vec_len != 256:
+            raise ValueError(f"Expected 256-dim vectors, got {vec_len}. Run 05_generate_embeddings_256.py first.")
+
     client = build_client()
     print("Connected to OpenSearch:", client.info()["version"]["number"])
 
@@ -144,6 +148,10 @@ def main() -> None:
 
     count = client.count(index=INDEX_NAME)["count"]
     print(f"Documents in {INDEX_NAME}: {count}")
+    if count < EXPECTED_COUNT:
+        print(f"WARNING: expected ~{EXPECTED_COUNT} documents, got {count}.")
+    else:
+        print("Count verified.")
 
 
 if __name__ == "__main__":

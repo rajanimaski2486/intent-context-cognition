@@ -1,8 +1,9 @@
 "use client";
 
 import type { Query, Pillar } from "@/lib/queries";
+import { useCorpus } from "./CorpusToggle";
 
-const PILLARS: { id: Pillar; label: string }[] = [
+const BASE_PILLARS: { id: Pillar; label: string }[] = [
   { id: "intent", label: "Intent" },
   { id: "context", label: "Context" },
   { id: "cognition", label: "Cognition" },
@@ -25,23 +26,35 @@ export default function QuerySelector({
   onPillarChange,
   onQuerySelect,
 }: Props) {
+  const { corpus } = useCorpus();
+  const pillars = corpus === "extended"
+    ? [...BASE_PILLARS, { id: "precision" as Pillar, label: "Precision" }]
+    : BASE_PILLARS;
+
   const visible = queries.filter((q) => q.pillar === activePillar);
 
   return (
     <div className="flex flex-col gap-3">
       {/* pillar tabs */}
-      <div className="flex gap-2">
-        {PILLARS.map((p) => (
+      <div className="flex gap-2 flex-wrap">
+        {pillars.map((p) => (
           <button
             key={p.id}
             onClick={() => onPillarChange(p.id)}
             className={`px-4 py-1.5 rounded-full text-sm font-medium border transition-colors ${
               activePillar === p.id
                 ? "border-green-700 bg-green-900/30 text-green-300"
+                : p.id === "precision"
+                ? "border-purple-800 bg-purple-950/50 text-purple-400 hover:border-purple-600 hover:text-purple-200"
                 : "border-zinc-700 bg-zinc-900 text-zinc-400 hover:border-zinc-500 hover:text-zinc-200"
             }`}
           >
             {p.label}
+            {p.id === "precision" && (
+              <span className="ml-1.5 text-[9px] border border-purple-700 rounded px-1 py-px text-purple-500">
+                P@6
+              </span>
+            )}
           </button>
         ))}
       </div>
@@ -63,7 +76,7 @@ export default function QuerySelector({
             >
               <p className="font-medium leading-snug">{q.label}</p>
               <p className="text-[11px] text-zinc-500 mt-1 leading-snug group-hover:text-zinc-400 transition-colors line-clamp-2">
-                "{q.display_text}"
+                &ldquo;{q.display_text}&rdquo;
               </p>
             </button>
           );

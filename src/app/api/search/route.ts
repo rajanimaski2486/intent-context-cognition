@@ -1,12 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getQueryById, validateQueryId } from "@/lib/queries";
-import { getOpenSearchClient } from "@/lib/opensearch";
-
-const INDEX = "reveal_images";
+import { getOpenSearchClient, CORPUS_CONFIG, type CorpusMode } from "@/lib/opensearch";
 
 const RequestSchema = z.object({
   query_id: z.string(),
+  corpus: z.enum(["standard", "extended"]).default("standard"),
   session_vector: z.array(z.number()).optional(),
 });
 
@@ -22,6 +21,14 @@ export interface ImageResult {
   width: number;
   height: number;
   score: number;
+}
+
+export interface SearchTrace {
+  embedding_source: "query_embedding" | "session_vector";
+  bm25_query: object;
+  knn_query: object;
+  bm25_result_count: number;
+  knn_result_count: number;
 }
 
 function parseHits(hits: Record<string, unknown>[]): ImageResult[] {
@@ -43,42 +50,52 @@ function parseHits(hits: Record<string, unknown>[]): ImageResult[] {
   });
 }
 
-async function bm25Search(keywords: string): Promise<ImageResult[]> {
-  if (!keywords.trim()) return [];
+async function bm25Search(
+  index: string,
+  keywords: string
+): Promise<{ results: ImageResult[]; query: object }> {
+  if (!keywords.trim()) return { results: [], query: {} };
   const client = getOpenSearchClient();
-  const resp = await client.search({
-    index: INDEX,
-    body: {
-      query: {
-        multi_match: {
-          query: keywords,
-          fields: ["title^2", "description", "tags"],
-          type: "best_fields",
-        },
-      },
-      size: 6,
+  const type = "best_fields" as const;
+  const queryBody = {
+    multi_match: {
+      query: keywords,
+      fields: ["title^2", "description", "tags"],
+      type,
     },
+  };
+  const resp = await client.search({
+    index,
+    body: { query: queryBody, size: 6 },
   });
-  return parseHits(resp.body.hits.hits as Record<string, unknown>[]);
+  return { results: parseHits(resp.body.hits.hits as Record<string, unknown>[]), query: queryBody };
 }
 
-async function knnSearch(vector: number[]): Promise<ImageResult[]> {
+function truncateVector(vector: number[]): string {
+  const preview = vector.slice(0, 4).map((v) => v.toFixed(4)).join(", ");
+  return `[${preview}, … (${vector.length} dims)]`;
+}
+
+async function knnSearch(
+  index: string,
+  vector: number[]
+): Promise<{ results: ImageResult[]; query: object }> {
   const client = getOpenSearchClient();
   const resp = await client.search({
-    index: INDEX,
+    index,
     body: {
       size: 6,
       query: {
-        knn: {
-          dense_vector: {
-            vector,
-            k: 6,
-          },
-        },
+        knn: { dense_vector: { vector, k: 6 } },
       },
     },
   });
-  return parseHits(resp.body.hits.hits as Record<string, unknown>[]);
+  const queryBody = {
+    knn: {
+      dense_vector: { vector: truncateVector(vector), k: 6 },
+    },
+  };
+  return { results: parseHits(resp.body.hits.hits as Record<string, unknown>[]), query: queryBody };
 }
 
 export async function POST(req: NextRequest) {
@@ -88,19 +105,35 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
   }
 
-  const { query_id, session_vector } = parsed.data;
+  const { query_id, corpus, session_vector } = parsed.data;
 
-  if (!validateQueryId(query_id)) {
+  if (!validateQueryId(query_id, corpus)) {
     return NextResponse.json({ error: `Unknown query_id: ${query_id}` }, { status: 400 });
   }
 
-  const query = getQueryById(query_id)!;
+  const query = getQueryById(query_id, corpus)!;
+  const index = CORPUS_CONFIG[corpus].index;
   const searchVector = session_vector ?? query.embedding;
 
-  const [legacy, discovery] = await Promise.all([
-    bm25Search(query.bm25_keywords),
-    searchVector.length > 0 ? knnSearch(searchVector) : Promise.resolve([]),
+  const [bm25Result, knnResult] = await Promise.all([
+    bm25Search(index, query.bm25_keywords),
+    searchVector.length > 0
+      ? knnSearch(index, searchVector)
+      : Promise.resolve({ results: [], query: {} }),
   ]);
 
-  return NextResponse.json({ legacy, discovery });
+  const trace: SearchTrace = {
+    embedding_source: session_vector ? "session_vector" : "query_embedding",
+    bm25_query: bm25Result.query,
+    knn_query: knnResult.query,
+    bm25_result_count: bm25Result.results.length,
+    knn_result_count: knnResult.results.length,
+  };
+
+  return NextResponse.json({
+    legacy: bm25Result.results,
+    discovery: knnResult.results,
+    corpus,
+    trace,
+  });
 }

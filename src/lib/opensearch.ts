@@ -1,5 +1,22 @@
 import { Client } from "@opensearch-project/opensearch";
 
+export const CORPUS_CONFIG = {
+  standard: {
+    index: "icc_images",
+    dimensions: 1536,
+    registry: "queries_standard.json",
+  },
+  extended: {
+    index: "icc_images_ext",
+    dimensions: 256,
+    registry: "queries_extended.json",
+  },
+} as const;
+
+export type CorpusMode = keyof typeof CORPUS_CONFIG;
+
+export const SESSION_INDEX = "icc_sessions";
+
 function requireEnv(name: string): string {
   const val = process.env[name];
   if (!val) throw new Error(`Missing required environment variable: ${name}`);
@@ -15,7 +32,6 @@ export function getOpenSearchClient(): Client {
   const username = requireEnv("OPENSEARCH_USERNAME");
   const password = requireEnv("OPENSEARCH_PASSWORD");
 
-  // Inject credentials into URL: https://user:pass@host:port
   const parsed = new URL(url);
   parsed.username = encodeURIComponent(username);
   parsed.password = encodeURIComponent(password);

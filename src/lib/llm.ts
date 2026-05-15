@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import { getQueryById } from "@/lib/queries";
+import { getQueryById, type CorpusMode } from "@/lib/queries";
 
 interface LLMConfig {
   baseURL: string;
@@ -71,8 +71,11 @@ async function callLLM(
 
 // --- full fallback chain ---
 
-export async function streamTrace(queryId: string): Promise<ReadableStream<Uint8Array>> {
-  const query = getQueryById(queryId);
+export async function streamTrace(
+  queryId: string,
+  corpus: CorpusMode = "standard"
+): Promise<ReadableStream<Uint8Array>> {
+  const query = getQueryById(queryId, corpus);
   if (!query?.trace_template) {
     throw new Error(`Query ${queryId} has no trace_template`);
   }
@@ -99,7 +102,6 @@ export async function streamTrace(queryId: string): Promise<ReadableStream<Uint8
     model: process.env.LLM_FALLBACK_MODEL ?? "gpt-4o-mini",
   };
 
-  // attempts 1 & 2: NVIDIA NIM
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -112,7 +114,6 @@ export async function streamTrace(queryId: string): Promise<ReadableStream<Uint8
     }
   }
 
-  // attempt 3: OpenAI fallback
   {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -126,7 +127,6 @@ export async function streamTrace(queryId: string): Promise<ReadableStream<Uint8
     }
   }
 
-  // final: scripted
   console.log("all_llms_failed", queryId);
   return streamScriptedTrace(steps);
 }

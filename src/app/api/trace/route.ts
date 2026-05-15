@@ -5,6 +5,7 @@ import { streamTrace, streamScriptedTrace } from "@/lib/llm";
 
 const RequestSchema = z.object({
   query_id: z.string(),
+  corpus: z.enum(["standard", "extended"]).default("standard"),
 });
 
 export async function POST(req: NextRequest) {
@@ -14,18 +15,18 @@ export async function POST(req: NextRequest) {
     return errorStream("Invalid request body");
   }
 
-  const { query_id } = parsed.data;
+  const { query_id, corpus } = parsed.data;
 
-  if (!validateQueryId(query_id)) {
+  if (!validateQueryId(query_id, corpus)) {
     return errorStream(`Unknown query_id: ${query_id}`);
   }
 
-  const query = getQueryById(query_id)!;
+  const query = getQueryById(query_id, corpus)!;
   if (!query.trace_template) {
     return errorStream("Query has no trace_template");
   }
 
-  const readable = await streamTrace(query_id);
+  const readable = await streamTrace(query_id, corpus);
 
   return new Response(readable, {
     headers: {
@@ -37,7 +38,6 @@ export async function POST(req: NextRequest) {
 }
 
 function errorStream(message: string): Response {
-  // Never show a raw error on stage — fall back to a generic scripted trace
   const fallbackSteps = [
     "Initialising trace...",
     `Note: ${message}`,

@@ -1,17 +1,38 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import type { Pillar, Query } from "@/lib/queries";
-import queriesData from "@/data/queries.json";
-import type { ImageResult } from "@/app/api/search/route";
+import standardData from "@/data/queries_standard.json";
+import extendedData from "@/data/queries_extended.json";
+import type { ImageResult, SearchTrace } from "@/app/api/search/route";
+import { CorpusProvider, CorpusToggle, useCorpus } from "@/components/CorpusToggle";
 import QuerySelector from "@/components/QuerySelector";
 import DualResults from "@/components/DualResults";
 import SessionFlow from "@/components/SessionFlow";
 import AgentTrace from "@/components/AgentTrace";
+import ExecutionTrace, { type ExecStep } from "@/components/ExecutionTrace";
+import SignalExtractor from "@/components/SignalExtractor";
 
-const allQueries = queriesData.queries as Query[];
+const REGISTRIES = {
+  standard: standardData.queries as Query[],
+  extended: extendedData.queries as Query[],
+};
 
-export default function Home() {
+function SpeakerNote({ query }: { query: Query }) {
+  const params = useSearchParams();
+  if (!params.get("speaker")) return null;
+
+  return (
+    <div className="fixed bottom-4 right-4 max-w-xs bg-zinc-900 border border-amber-700 rounded-lg px-4 py-3 shadow-xl z-50">
+      <p className="text-[10px] text-amber-500 uppercase tracking-widest mb-1.5">Speaker note</p>
+      <p className="text-xs text-zinc-200 leading-relaxed">{query.speaker_note}</p>
+    </div>
+  );
+}
+
+function AppContent() {
+  const { corpus, setCorpus } = useCorpus();
   const [activePillar, setActivePillar] = useState<Pillar>("intent");
   const [activeQuery, setActiveQuery] = useState<Query | null>(null);
   const [legacy, setLegacy] = useState<ImageResult[]>([]);
@@ -19,6 +40,23 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [traceActive, setTraceActive] = useState(false);
   const [traceKey, setTraceKey] = useState(0);
+  const [execSteps, setExecSteps] = useState<ExecStep[]>([]);
+  const prevCorpus = useRef(corpus);
+
+  const allQueries = REGISTRIES[corpus];
+
+  // reset on corpus switch
+  useEffect(() => {
+    if (prevCorpus.current !== corpus) {
+      prevCorpus.current = corpus;
+      setActivePillar("intent");
+      setActiveQuery(null);
+      setLegacy([]);
+      setDiscovery([]);
+      setTraceActive(false);
+      setExecSteps([]);
+    }
+  }, [corpus]);
 
   const handlePillarChange = (p: Pillar) => {
     setActivePillar(p);
@@ -26,6 +64,7 @@ export default function Home() {
     setLegacy([]);
     setDiscovery([]);
     setTraceActive(false);
+    setExecSteps([]);
   };
 
   const handleQuerySelect = async (query: Query) => {
@@ -34,6 +73,9 @@ export default function Home() {
     setLegacy([]);
     setDiscovery([]);
     setTraceActive(false);
+    setExecSteps([]);
+
+    const steps: ExecStep[] = [];
 
     try {
       let searchVector: number[] | undefined;
@@ -45,13 +87,53 @@ export default function Home() {
           body: JSON.stringify({
             session_id: query.session_chain.session_id,
             query_id: query.id,
+            corpus,
             step: query.session_chain.step,
           }),
         });
         if (sessionResp.ok) {
-          const sessionData = (await sessionResp.json()) as { session_vector: number[] };
+          const sessionData = (await sessionResp.json()) as {
+            session_vector: number[];
+            trace?: {
+              prior_query_count: number;
+              queries: string[];
+              weights: number[];
+              decay_base: number;
+              pivot_applied: boolean;
+              pivot_scale?: number;
+            };
+          };
           searchVector = sessionData.session_vector;
+          if (sessionData.trace) {
+            steps.push({
+              id: "session",
+              type: "session",
+              label: "Session vector computed (recency decay)",
+              sublabel: sessionData.trace.pivot_applied
+                ? `${sessionData.trace.prior_query_count} prior queries · pivot applied (scale ${sessionData.trace.pivot_scale})`
+                : `${sessionData.trace.prior_query_count} prior queries blended`,
+              detail: sessionData.trace,
+            });
+          }
         }
+      }
+
+      steps.push({
+        id: "embed",
+        type: "embed",
+        label: searchVector
+          ? "Session vector used for k-NN search"
+          : "Query embedding loaded (OpenAI text-embedding-3-small, pre-computed)",
+        sublabel: `${corpus === "extended" ? "256" : "1536"}-dimensional dense vector`,
+      });
+
+      if (query.pillar === "cognition") {
+        steps.push({
+          id: "llm",
+          type: "llm",
+          label: "LLM agent reasoning invoked",
+          sublabel: "NVIDIA NIM meta/llama-3.1-8b-instruct → OpenAI gpt-4o-mini → scripted fallback",
+        });
       }
 
       const searchResp = await fetch("/api/search", {
@@ -59,6 +141,7 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           query_id: query.id,
+          corpus,
           ...(searchVector ? { session_vector: searchVector } : {}),
         }),
       });
@@ -67,11 +150,30 @@ export default function Home() {
         const data = (await searchResp.json()) as {
           legacy: ImageResult[];
           discovery: ImageResult[];
+          trace?: SearchTrace;
         };
         setLegacy(data.legacy);
         setDiscovery(data.discovery);
+
+        if (data.trace) {
+          steps.push({
+            id: "bm25",
+            type: "bm25",
+            label: "BM25 keyword search",
+            sublabel: `${data.trace.bm25_result_count} results · multi_match on title^2 / description / tags`,
+            detail: { index: corpus === "extended" ? "icc_images_ext" : "icc_images", query: data.trace.bm25_query, size: 6 },
+          });
+          steps.push({
+            id: "knn",
+            type: "knn",
+            label: `k-NN vector search${searchVector ? " (session-aware)" : ""}`,
+            sublabel: `${data.trace.knn_result_count} results · cosine similarity · HNSW/faiss`,
+            detail: { index: corpus === "extended" ? "icc_images_ext" : "icc_images", query: data.trace.knn_query, size: 6 },
+          });
+        }
       }
     } finally {
+      setExecSteps(steps);
       setLoading(false);
       if (query.pillar === "cognition") {
         setTraceKey((k) => k + 1);
@@ -83,24 +185,26 @@ export default function Home() {
   const showResults = activeQuery !== null;
   const showSession = activeQuery?.pillar === "context";
   const showTrace = activeQuery?.pillar === "cognition";
+  const showPrecision = corpus === "extended" && activeQuery?.precision_score != null;
 
   return (
     <div className="min-h-screen flex flex-col bg-[#0a0a0a]">
-      {/* header */}
-      <header className="border-b border-zinc-800 px-4 py-4 flex items-start justify-between">
-        <div>
+      <header className="border-b border-zinc-800 px-4 py-4 flex items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
           <span className="text-xl font-bold tracking-tight text-white">REVEAL</span>
-          <span className="ml-3 text-xs text-zinc-500 uppercase tracking-widest hidden sm:inline">
+          <span className="text-xs text-zinc-500 uppercase tracking-widest hidden sm:inline">
             Search finds. Reveal discovers.
           </span>
         </div>
-        <div className="text-right text-xs text-zinc-500 leading-snug">
-          <div className="text-green-500 font-medium">Generative Discovery</div>
-          <div>on OpenSearch</div>
+        <div className="flex items-center gap-4">
+          <CorpusToggle />
+          <div className="text-right text-xs text-zinc-500 leading-snug hidden sm:block">
+            <div className="text-green-500 font-medium">Generative Discovery</div>
+            <div>on OpenSearch</div>
+          </div>
         </div>
       </header>
 
-      {/* main */}
       <main className="flex-1 px-4 py-5 flex flex-col gap-5 max-w-5xl w-full mx-auto">
         <QuerySelector
           queries={allQueries}
@@ -117,9 +221,18 @@ export default function Home() {
               &ldquo;{activeQuery!.display_text}&rdquo;
             </div>
 
+            <SignalExtractor query={activeQuery!} />
+
             {showSession && <SessionFlow query={activeQuery!} />}
 
-            <DualResults legacy={legacy} discovery={discovery} loading={loading} />
+            <ExecutionTrace steps={execSteps} />
+
+            <DualResults
+              legacy={legacy}
+              discovery={discovery}
+              loading={loading}
+              precisionScore={showPrecision ? activeQuery!.precision_score : null}
+            />
 
             {showTrace && (
               <AgentTrace
@@ -137,6 +250,18 @@ export default function Home() {
           </div>
         )}
       </main>
+
+      {showResults && activeQuery && <SpeakerNote query={activeQuery} />}
     </div>
+  );
+}
+
+export default function Home() {
+  return (
+    <CorpusProvider>
+      <Suspense>
+        <AppContent />
+      </Suspense>
+    </CorpusProvider>
   );
 }

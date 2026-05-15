@@ -1,15 +1,18 @@
 """
-Generate embeddings for:
-  1. All images in pexels_images.jsonl  (title + description + tags)
-  2. All 13 query display_text values in queries_standard.json
+Generate 256-dimensional embeddings for the extended corpus.
+
+Embeds:
+  1. All images in pexels_images_ext.jsonl  (title + description + tags)
+  2. All 18 query display_text values in queries_extended.json
   3. All session_chain.prior_queries
 
 Writes:
-  - pexels_images_embedded.jsonl        (images with dense_vector field populated)
-  - ../src/data/queries_standard.json   (queries with embedding + prior_embeddings populated)
+  - pexels_images_ext_embedded.jsonl      (images with dense_vector field populated)
+  - ../src/data/queries_extended.json     (queries with embedding + prior_embeddings populated)
 
-Model: text-embedding-3-small  (1536 dimensions)
-Run: python 02_generate_embeddings.py
+Model: text-embedding-3-small at dimensions=256
+Run: python 05_generate_embeddings_256.py
+NOTE: This script never touches pexels_images_embedded.jsonl or queries_standard.json.
 """
 
 import json
@@ -23,21 +26,21 @@ from tqdm import tqdm
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", ".env.local"))
 
 PIPELINE_DIR = os.path.dirname(__file__)
-IMAGES_IN = os.path.join(PIPELINE_DIR, "pexels_images.jsonl")
-IMAGES_OUT = os.path.join(PIPELINE_DIR, "pexels_images_embedded.jsonl")  # also used as checkpoint
-QUERIES_IN = os.path.join(PIPELINE_DIR, "..", "src", "data", "queries_standard.json")
-QUERIES_OUT = os.path.join(PIPELINE_DIR, "..", "src", "data", "queries_standard.json")
+IMAGES_IN = os.path.join(PIPELINE_DIR, "pexels_images_ext.jsonl")
+IMAGES_OUT = os.path.join(PIPELINE_DIR, "pexels_images_ext_embedded.jsonl")
+QUERIES_IN = os.path.join(PIPELINE_DIR, "..", "src", "data", "queries_extended.json")
+QUERIES_OUT = os.path.join(PIPELINE_DIR, "..", "src", "data", "queries_extended.json")
 
 MODEL = "text-embedding-3-small"
+DIMENSIONS = 256
 BATCH_SIZE = 100
-RATE_LIMIT_PAUSE = 0.05  # seconds between batches
+RATE_LIMIT_PAUSE = 0.05
 
 client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
 
 def embed_texts(texts: list[str]) -> list[list[float]]:
-    """Embed a batch of texts. Returns list of 1536-dim vectors."""
-    response = client.embeddings.create(model=MODEL, input=texts)
+    response = client.embeddings.create(model=MODEL, input=texts, dimensions=DIMENSIONS)
     return [item.embedding for item in response.data]
 
 
@@ -47,9 +50,9 @@ def _image_text(img: dict) -> str:
 
 
 def embed_images(images: list[dict]) -> list[dict]:
-    # resume from checkpoint if it exists
     done_ids: set[str] = set()
     results: list[dict] = []
+
     if os.path.exists(IMAGES_OUT):
         with open(IMAGES_OUT, encoding="utf-8") as f:
             for line in f:
@@ -61,7 +64,7 @@ def embed_images(images: list[dict]) -> list[dict]:
         print(f"Resuming: {len(done_ids)} images already embedded.")
 
     remaining = [img for img in images if img["image_id"] not in done_ids]
-    pbar = tqdm(total=len(images), initial=len(done_ids), desc="embedding images", unit="img")
+    pbar = tqdm(total=len(images), initial=len(done_ids), desc="embedding images (256d)", unit="img")
 
     with open(IMAGES_OUT, "a", encoding="utf-8") as out:
         for i in range(0, len(remaining), BATCH_SIZE):
@@ -80,10 +83,8 @@ def embed_images(images: list[dict]) -> list[dict]:
 
 
 def embed_queries(queries: list[dict]) -> list[dict]:
-    # collect all texts we need to embed in one pass
     query_texts = [q["display_text"] for q in queries]
 
-    # collect all prior_query texts (deduplicated, preserving order)
     prior_text_set: dict[str, None] = {}
     for q in queries:
         if q.get("session_chain") and q["session_chain"].get("prior_queries"):
@@ -92,12 +93,12 @@ def embed_queries(queries: list[dict]) -> list[dict]:
 
     all_prior_texts = list(prior_text_set.keys())
 
-    print(f"Embedding {len(query_texts)} query texts...")
+    print(f"Embedding {len(query_texts)} query texts at {DIMENSIONS}d...")
     query_vectors = embed_texts(query_texts)
 
     prior_vectors: dict[str, list[float]] = {}
     if all_prior_texts:
-        print(f"Embedding {len(all_prior_texts)} prior query texts...")
+        print(f"Embedding {len(all_prior_texts)} prior query texts at {DIMENSIONS}d...")
         vecs = embed_texts(all_prior_texts)
         prior_vectors = dict(zip(all_prior_texts, vecs))
 
@@ -119,7 +120,6 @@ def embed_queries(queries: list[dict]) -> list[dict]:
 
 
 def main() -> None:
-    # --- images ---
     print(f"Loading images from {IMAGES_IN}...")
     images: list[dict] = []
     with open(IMAGES_IN, encoding="utf-8") as f:
@@ -132,7 +132,6 @@ def main() -> None:
     embedded_images = embed_images(images)
     print(f"Embedded {len(embedded_images)} images → {IMAGES_OUT}")
 
-    # --- queries ---
     print(f"\nLoading queries from {QUERIES_IN}...")
     with open(QUERIES_IN, encoding="utf-8") as f:
         registry = json.load(f)
@@ -143,6 +142,11 @@ def main() -> None:
     with open(QUERIES_OUT, "w", encoding="utf-8") as f:
         json.dump(registry, f, indent=2, ensure_ascii=False)
     print(f"Saved embedded queries → {QUERIES_OUT}")
+
+    print(f"\nVerify: {len(embedded_images)} images embedded at {DIMENSIONS}d")
+    if embedded_images:
+        sample_vec = embedded_images[0].get("dense_vector", [])
+        print(f"Sample vector length: {len(sample_vec)} (expected {DIMENSIONS})")
 
 
 if __name__ == "__main__":
