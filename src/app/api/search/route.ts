@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { getQueryById, validateQueryId } from "@/lib/queries";
+import { getQueryById, validateQueryId, parseJourneyStepId, getJourneyStep } from "@/lib/queries";
 import { getOpenSearchClient, CORPUS_CONFIG, type CorpusMode } from "@/lib/opensearch";
 
 const RequestSchema = z.object({
   query_id: z.string(),
   corpus: z.enum(["standard", "extended"]).default("standard"),
   session_vector: z.array(z.number()).optional(),
+  journey_session: z.boolean().optional(),
 });
 
 export interface ImageResult {
@@ -105,14 +106,47 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
   }
 
-  const { query_id, corpus, session_vector } = parsed.data;
+  const { query_id, corpus, session_vector, journey_session } = parsed.data;
+  const index = CORPUS_CONFIG[corpus].index;
 
+  // Journey step path
+  if (journey_session) {
+    const parsedStep = parseJourneyStepId(query_id);
+    if (!parsedStep) {
+      return NextResponse.json({ error: `Invalid journey step id: ${query_id}` }, { status: 400 });
+    }
+    const step = getJourneyStep(parsedStep.journeyId, parsedStep.step, corpus);
+    if (!step) {
+      return NextResponse.json({ error: `Unknown journey step: ${query_id}` }, { status: 400 });
+    }
+
+    const searchVector = step.session_accumulated_embedding;
+    const bm25Keywords = step.bm25_keywords ?? "";
+
+    const [bm25Result, knnResult] = await Promise.all([
+      bm25Search(index, bm25Keywords),
+      searchVector && searchVector.length > 0
+        ? knnSearch(index, searchVector)
+        : Promise.resolve({ results: [], query: {} }),
+    ]);
+
+    const trace: SearchTrace = {
+      embedding_source: "session_vector",
+      bm25_query: bm25Result.query,
+      knn_query: knnResult.query,
+      bm25_result_count: bm25Result.results.length,
+      knn_result_count: knnResult.results.length,
+    };
+
+    return NextResponse.json({ legacy: bm25Result.results, discovery: knnResult.results, corpus, trace });
+  }
+
+  // Standard query path
   if (!validateQueryId(query_id, corpus)) {
     return NextResponse.json({ error: `Unknown query_id: ${query_id}` }, { status: 400 });
   }
 
   const query = getQueryById(query_id, corpus)!;
-  const index = CORPUS_CONFIG[corpus].index;
   const searchVector = session_vector ?? query.embedding;
 
   const [bm25Result, knnResult] = await Promise.all([

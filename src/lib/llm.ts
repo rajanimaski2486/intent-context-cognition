@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import { getQueryById, type CorpusMode } from "@/lib/queries";
+import { getQueryById, parseJourneyStepId, getJourneyStep, type CorpusMode } from "@/lib/queries";
 
 interface LLMConfig {
   baseURL: string;
@@ -71,16 +71,36 @@ async function callLLM(
 
 // --- full fallback chain ---
 
+function resolveTraceSource(
+  queryId: string,
+  corpus: CorpusMode
+): { steps: string[]; displayText: string } | null {
+  // Try regular query first
+  const query = getQueryById(queryId, corpus);
+  if (query?.trace_template) {
+    return { steps: query.trace_template.steps, displayText: query.display_text };
+  }
+  // Try journey step
+  const parsedStep = parseJourneyStepId(queryId);
+  if (parsedStep) {
+    const step = getJourneyStep(parsedStep.journeyId, parsedStep.step, corpus);
+    if (step?.trace_template && step.display_text) {
+      return { steps: step.trace_template.steps, displayText: step.display_text };
+    }
+  }
+  return null;
+}
+
 export async function streamTrace(
   queryId: string,
   corpus: CorpusMode = "standard"
 ): Promise<ReadableStream<Uint8Array>> {
-  const query = getQueryById(queryId, corpus);
-  if (!query?.trace_template) {
+  const source = resolveTraceSource(queryId, corpus);
+  if (!source) {
     throw new Error(`Query ${queryId} has no trace_template`);
   }
 
-  const steps = query.trace_template.steps;
+  const { steps, displayText } = source;
   const traceMode = process.env.TRACE_MODE ?? "scripted";
 
   if (traceMode === "scripted") {
@@ -106,7 +126,7 @@ export async function streamTrace(
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const result = await callLLM(nvidiaConfig, query.display_text, controller.signal);
+      const result = await callLLM(nvidiaConfig, displayText, controller.signal);
       clearTimeout(timer);
       return result;
     } catch {
@@ -118,7 +138,7 @@ export async function streamTrace(
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const result = await callLLM(openaiConfig, query.display_text, controller.signal);
+      const result = await callLLM(openaiConfig, displayText, controller.signal);
       clearTimeout(timer);
       console.log("openai_fallback_used", queryId);
       return result;

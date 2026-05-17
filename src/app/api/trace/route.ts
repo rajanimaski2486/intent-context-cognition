@@ -1,6 +1,11 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
-import { validateQueryId, getQueryById } from "@/lib/queries";
+import {
+  validateQueryId,
+  getQueryById,
+  parseJourneyStepId,
+  getJourneyStep,
+} from "@/lib/queries";
 import { streamTrace, streamScriptedTrace } from "@/lib/llm";
 
 const RequestSchema = z.object({
@@ -16,6 +21,22 @@ export async function POST(req: NextRequest) {
   }
 
   const { query_id, corpus } = parsed.data;
+
+  // Check if this is a journey step trace request
+  const parsedStep = parseJourneyStepId(query_id);
+  if (parsedStep) {
+    const step = getJourneyStep(parsedStep.journeyId, parsedStep.step, corpus);
+    if (!step) return errorStream(`Unknown journey step: ${query_id}`);
+    if (!step.trace_template) return errorStream("Journey step has no trace_template");
+    const readable = await streamTrace(query_id, corpus);
+    return new Response(readable, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      },
+    });
+  }
 
   if (!validateQueryId(query_id, corpus)) {
     return errorStream(`Unknown query_id: ${query_id}`);

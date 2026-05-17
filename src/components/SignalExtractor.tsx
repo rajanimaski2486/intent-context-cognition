@@ -1,4 +1,3 @@
-import type { Query } from "@/lib/queries";
 
 const FAILURE_PREFIXES = [
   "bm25",
@@ -14,7 +13,7 @@ function isFailureSignal(label: string): boolean {
   return FAILURE_PREFIXES.some((p) => lower.startsWith(p));
 }
 
-export default function SignalExtractor({ query }: { query: Query }) {
+export default function SignalExtractor({ query }: { query: { signal_labels: string[] } }) {
   const labels = query.signal_labels;
   if (!labels || labels.length === 0) return null;
 

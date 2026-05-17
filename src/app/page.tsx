@@ -13,10 +13,18 @@ import SessionFlow from "@/components/SessionFlow";
 import AgentTrace from "@/components/AgentTrace";
 import ExecutionTrace, { type ExecStep } from "@/components/ExecutionTrace";
 import SignalExtractor from "@/components/SignalExtractor";
+import JourneyPlayer from "@/components/JourneyPlayer";
+import type { Journey } from "@/lib/queries";
 
 const REGISTRIES = {
-  standard: standardData.queries as Query[],
-  extended: extendedData.queries as Query[],
+  standard: {
+    queries: standardData.queries as Query[],
+    journeys: (standardData as unknown as { journeys: Journey[] }).journeys ?? [],
+  },
+  extended: {
+    queries: extendedData.queries as Query[],
+    journeys: (extendedData as unknown as { journeys: Journey[] }).journeys ?? [],
+  },
 };
 
 function SpeakerNote({ query }: { query: Query }) {
@@ -43,7 +51,8 @@ function AppContent() {
   const [execSteps, setExecSteps] = useState<ExecStep[]>([]);
   const prevCorpus = useRef(corpus);
 
-  const allQueries = REGISTRIES[corpus];
+  const allQueries = REGISTRIES[corpus].queries;
+  const allJourneys = REGISTRIES[corpus].journeys;
 
   // reset on corpus switch
   useEffect(() => {
@@ -182,7 +191,8 @@ function AppContent() {
     }
   };
 
-  const showResults = activeQuery !== null;
+  const isJourneyPillar = activePillar === "journey";
+  const showResults = activeQuery !== null && !isJourneyPillar;
   const showSession = activeQuery?.pillar === "context";
   const showTrace = activeQuery?.pillar === "cognition";
   const showPrecision = corpus === "extended" && activeQuery?.precision_score != null;
@@ -240,6 +250,10 @@ function AppContent() {
           onQuerySelect={handleQuerySelect}
         />
 
+        {isJourneyPillar && (
+          <JourneyPlayer journeys={allJourneys} corpus={corpus} />
+        )}
+
         {showResults && (
           <>
             <div className="text-sm text-zinc-400 italic border-l-2 border-green-800 pl-3">
@@ -269,7 +283,7 @@ function AppContent() {
           </>
         )}
 
-        {!showResults && (
+        {!showResults && !isJourneyPillar && (
           <div className="flex-1 flex items-center justify-center text-zinc-700 text-sm py-16">
             Select a query above to see the difference.
           </div>

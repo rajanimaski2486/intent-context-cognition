@@ -7,6 +7,7 @@ const BASE_PILLARS: { id: Pillar; label: string }[] = [
   { id: "intent", label: "Intent" },
   { id: "context", label: "Context" },
   { id: "cognition", label: "Cognition" },
+  { id: "journey", label: "Journey" },
 ];
 
 interface Props {
@@ -27,9 +28,14 @@ export default function QuerySelector({
   onQuerySelect,
 }: Props) {
   const { corpus } = useCorpus();
-  const pillars = corpus === "extended"
-    ? [...BASE_PILLARS, { id: "precision" as Pillar, label: "Precision" }]
-    : BASE_PILLARS;
+  const pillars =
+    corpus === "extended"
+      ? [
+          ...BASE_PILLARS.slice(0, 3),
+          { id: "journey" as Pillar, label: "Journey" },
+          { id: "precision" as Pillar, label: "Precision" },
+        ]
+      : BASE_PILLARS;
 
   const visible = queries.filter((q) => q.pillar === activePillar);
 
@@ -46,6 +52,8 @@ export default function QuerySelector({
                 ? "border-green-700 bg-green-900/30 text-green-300"
                 : p.id === "precision"
                 ? "border-purple-800 bg-purple-950/50 text-purple-400 hover:border-purple-600 hover:text-purple-200"
+                : p.id === "journey"
+                ? "border-amber-800 bg-amber-950/50 text-amber-400 hover:border-amber-600 hover:text-amber-200"
                 : "border-zinc-700 bg-zinc-900 text-zinc-400 hover:border-zinc-500 hover:text-zinc-200"
             }`}
           >
@@ -59,8 +67,8 @@ export default function QuerySelector({
         ))}
       </div>
 
-      {/* query cards */}
-      <div className="flex flex-wrap gap-2">
+      {/* query cards — hidden when journey tab is active */}
+      <div className={`flex flex-wrap gap-2 ${activePillar === "journey" ? "hidden" : ""}`}>
         {visible.map((q) => {
           const isActive = q.id === activeQueryId;
           return (

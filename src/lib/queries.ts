@@ -4,7 +4,7 @@ import extendedData from "@/data/queries_extended.json";
 
 export type { CorpusMode };
 
-export type Pillar = "intent" | "context" | "cognition" | "precision";
+export type Pillar = "intent" | "context" | "cognition" | "precision" | "journey";
 
 export interface SessionChain {
   session_id: string;
@@ -38,10 +38,36 @@ export interface Query {
   trace_template: TraceTemplate | null;
 }
 
+export interface JourneyStep {
+  step: number;
+  pillar_demonstrated: string;
+  label: string;
+  narrative: string;
+  display_text: string | null;
+  bm25_keywords: string | null;
+  embedding: number[];
+  session_accumulated_embedding: number[];
+  session_accumulates: boolean;
+  show_trace: boolean;
+  trace_template: TraceTemplate | null;
+  signal_labels: string[];
+  speaker_note: string;
+}
+
+export interface Journey {
+  id: string;
+  pillar: "journey";
+  label: string;
+  subtitle: string;
+  visible_in: ("standard" | "extended")[];
+  steps: JourneyStep[];
+}
+
 export interface QueryRegistry {
   corpus: CorpusMode;
   dimensions: number;
   queries: Query[];
+  journeys: Journey[];
 }
 
 const REGISTRIES: Record<CorpusMode, QueryRegistry> = {
@@ -59,4 +85,33 @@ export function getQueryById(id: string, corpus: CorpusMode = "standard"): Query
 
 export function validateQueryId(id: string, corpus: CorpusMode = "standard"): boolean {
   return loadQueries(corpus).some((q) => q.id === id);
+}
+
+export function loadJourneys(corpus: CorpusMode = "standard"): Journey[] {
+  return REGISTRIES[corpus].journeys ?? [];
+}
+
+export function getJourneyById(id: string, corpus: CorpusMode = "standard"): Journey | undefined {
+  return loadJourneys(corpus).find((j) => j.id === id);
+}
+
+// query_id format for journey steps: "journey_a_step_1", "journey_b_step_3", etc.
+export function parseJourneyStepId(queryId: string): { journeyId: string; step: number } | null {
+  const match = queryId.match(/^(journey_[a-z]+)_step_([123])$/);
+  if (!match) return null;
+  return { journeyId: match[1], step: parseInt(match[2], 10) };
+}
+
+export function getJourneyStep(
+  journeyId: string,
+  stepNum: number,
+  corpus: CorpusMode = "standard"
+): JourneyStep | undefined {
+  return getJourneyById(journeyId, corpus)?.steps.find((s) => s.step === stepNum);
+}
+
+export function validateJourneyStepId(id: string, corpus: CorpusMode = "standard"): boolean {
+  const parsed = parseJourneyStepId(id);
+  if (!parsed) return false;
+  return getJourneyStep(parsed.journeyId, parsed.step, corpus) !== undefined;
 }
