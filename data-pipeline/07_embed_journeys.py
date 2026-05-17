@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 Embed journey step display_text values and compute session_accumulated_embedding
 for all journey steps in queries_standard.json and queries_extended.json.
