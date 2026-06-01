@@ -32,6 +32,32 @@ export interface SearchTrace {
   knn_result_count: number;
 }
 
+type SearchErrorCode =
+  | "opensearch_unreachable"
+  | "auth_failed"
+  | "index_missing"
+  | "opensearch_error";
+
+function classifyOpenSearchError(err: unknown): { code: SearchErrorCode; status: number; detail: string } {
+  const e = err as { name?: string; message?: string; meta?: { statusCode?: number } };
+  const statusCode = e?.meta?.statusCode;
+  if (statusCode === 401 || statusCode === 403) {
+    return { code: "auth_failed", status: 502, detail: "OpenSearch rejected the credentials (check OPENSEARCH_USERNAME/PASSWORD)." };
+  }
+  if (statusCode === 404) {
+    return { code: "index_missing", status: 502, detail: "The target index does not exist — it may have been deleted or never created." };
+  }
+  if (statusCode) {
+    return { code: "opensearch_error", status: 502, detail: `OpenSearch returned status ${statusCode}.` };
+  }
+  // No HTTP status → connection/DNS/timeout level failure
+  return {
+    code: "opensearch_unreachable",
+    status: 503,
+    detail: "Could not reach the OpenSearch cluster (DNS/connection/timeout) — the Aiven service may be powered off or OPENSEARCH_URL may be wrong.",
+  };
+}
+
 function parseHits(hits: Record<string, unknown>[]): ImageResult[] {
   return hits.map((h) => {
     const src = h._source as Record<string, unknown>;
@@ -109,6 +135,28 @@ export async function POST(req: NextRequest) {
   const { query_id, corpus, session_vector, journey_session } = parsed.data;
   const index = CORPUS_CONFIG[corpus].index;
 
+  try {
+    return await handleSearch({ query_id, corpus, session_vector, journey_session, index });
+  } catch (err) {
+    const { code, status, detail } = classifyOpenSearchError(err);
+    console.error("search_failed", { code, index, message: (err as Error)?.message });
+    return NextResponse.json({ error: code, detail }, { status });
+  }
+}
+
+async function handleSearch({
+  query_id,
+  corpus,
+  session_vector,
+  journey_session,
+  index,
+}: {
+  query_id: string;
+  corpus: CorpusMode;
+  session_vector?: number[];
+  journey_session?: boolean;
+  index: string;
+}): Promise<NextResponse> {
   // Journey step path
   if (journey_session) {
     const parsedStep = parseJourneyStepId(query_id);
