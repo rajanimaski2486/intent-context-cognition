@@ -223,39 +223,35 @@ function AppContent() {
             Search finds. Reveal discovers.
           </span>
         </div>
-        <div className="flex items-center gap-6">
+        <div className="flex items-center gap-4 sm:gap-6">
           <CorpusToggle />
-          <div className="text-right text-xs text-zinc-500 leading-snug hidden sm:block">
-            <div className="text-green-500 font-medium">Generative Discovery</div>
-            <div>on OpenSearch</div>
-          </div>
-          <div className="hidden md:flex flex-col items-end gap-0.5 border-l border-zinc-800 pl-6">
-            <span className="text-xs text-zinc-300 font-medium">Passionate Staff AI Engineer</span>
-            <a
-              href="https://www.linkedin.com/in/rajanimaski/"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-[10px] text-blue-400 hover:text-blue-300 transition-colors"
-            >
-              Connect on LinkedIn →
-            </a>
+          <div className="flex flex-col items-end gap-0.5 border-l border-zinc-800 pl-4 sm:pl-6 leading-snug">
+            <span className="text-xs text-zinc-200 font-medium">Rajani Maski</span>
+            <span className="text-[10px] text-zinc-500 hidden sm:block">
+              Passionate Staff Software Engineer, AI
+            </span>
+            <div className="flex items-center gap-2 mt-0.5">
+              <a
+                href="https://opensearchconin2026.sched.com/event/2KF73?iframe=no"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[10px] text-amber-400 hover:text-amber-300 transition-colors"
+              >
+                OpenSearch Con India 2026 ↗
+              </a>
+              <span className="text-zinc-700">·</span>
+              <a
+                href="https://www.linkedin.com/in/rajanimaski/"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[10px] text-blue-400 hover:text-blue-300 transition-colors"
+              >
+                LinkedIn →
+              </a>
+            </div>
           </div>
         </div>
       </header>
-
-      <div className="border-b border-zinc-800/60 bg-zinc-900/40 px-4 py-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-400">
-        <span className="text-zinc-500">Demo app built for</span>
-        <a
-          href="https://opensearchconin2026.sched.com/event/2KF73?iframe=no"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-amber-400 hover:text-amber-300 transition-colors font-medium"
-        >
-          OpenSearch Con India 2026 ↗
-        </a>
-        <span className="text-zinc-700 hidden sm:inline">·</span>
-        <span className="hidden sm:inline">Demonstrating Generative Discovery on OpenSearch — comparing AI-powered discovery against legacy keyword search</span>
-      </div>
 
       <main className="flex-1 px-4 py-5 flex flex-col gap-5 max-w-5xl w-full mx-auto">
         <QuerySelector
