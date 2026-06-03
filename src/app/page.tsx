@@ -196,6 +196,22 @@ function AppContent() {
             sublabel: `${data.trace.fusion.normalization} · ${data.trace.fusion.combination} · BM25 ${data.trace.fusion.weights.bm25} / vector ${data.trace.fusion.weights.vector}`,
             detail: data.trace.fusion,
           });
+          if (data.trace.rerank) {
+            const rk = data.trace.rerank;
+            const cacheLabel =
+              rk.cache === "hit" ? "cache hit (no model call)"
+              : rk.cache === "stored" ? "model call → cached"
+              : rk.cache === "fallback" ? "model unavailable → hybrid order"
+              : rk.cache === "disabled" ? "disabled"
+              : rk.cache;
+            steps.push({
+              id: "rerank",
+              type: "rerank",
+              label: `LLM vision rerank (${rk.candidates_considered}→${rk.returned})`,
+              sublabel: `${rk.model} · ${cacheLabel}`,
+              detail: rk,
+            });
+          }
         }
       }
     } finally {

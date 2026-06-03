@@ -52,8 +52,6 @@ export default function QuerySelector({
                 ? "border-green-700 bg-green-900/30 text-green-300"
                 : p.id === "precision"
                 ? "border-purple-800 bg-purple-950/50 text-purple-400 hover:border-purple-600 hover:text-purple-200"
-                : p.id === "journey"
-                ? "border-amber-800 bg-amber-950/50 text-amber-400 hover:border-amber-600 hover:text-amber-200"
                 : "border-zinc-700 bg-zinc-900 text-zinc-400 hover:border-zinc-500 hover:text-zinc-200"
             }`}
           >

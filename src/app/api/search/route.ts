@@ -11,6 +11,20 @@ import {
   HYBRID_COMBINATION,
   type CorpusMode,
 } from "@/lib/opensearch";
+import {
+  ensureRerankIndex,
+  computeCacheKey,
+  getCachedRerank,
+  storeRerank,
+  rerankWithVision,
+  rerankModelName,
+  isRerankEnabled,
+  type RerankCacheStatus,
+} from "@/lib/rerank";
+
+// Candidate pool the LLM reranker judges before we return the top 6.
+const RERANK_POOL_SIZE = 50;
+const RESULT_SIZE = 6;
 
 const RequestSchema = z.object({
   query_id: z.string(),
@@ -44,6 +58,13 @@ export interface SearchTrace {
     weights: { bm25: number; vector: number };
   };
   filters_applied: string[];
+  rerank: {
+    applied: boolean;
+    model: string;
+    cache: RerankCacheStatus;
+    candidates_considered: number;
+    returned: number;
+  };
   bm25_result_count: number;
   discovery_result_count: number;
 }
@@ -167,7 +188,7 @@ async function hybridSearch(
   const bm25Sub = keywords.trim()
     ? { multi_match: { query: keywords, fields: ["title^2", "description", "tags"], type: "best_fields" } }
     : { match_none: {} };
-  const subqueries: object[] = [bm25Sub, { knn: { dense_vector: { vector, k: 50 } } }];
+  const subqueries: object[] = [bm25Sub, { knn: { dense_vector: { vector, k: RERANK_POOL_SIZE } } }];
 
   const { clause, labels } = buildFilterClause(filters);
 
@@ -176,13 +197,13 @@ async function hybridSearch(
 
   const resp = await client.search({
     index,
-    body: { size: 6, query: { hybrid } },
+    body: { size: RERANK_POOL_SIZE, query: { hybrid } },
     search_pipeline: HYBRID_PIPELINE,
   });
 
   // Display version with the dense vector truncated for the execution trace.
   const displaySubqueries = subqueries.map((s) =>
-    "knn" in s ? { knn: { dense_vector: { vector: truncateVector(vector), k: 50 } } } : s
+    "knn" in s ? { knn: { dense_vector: { vector: truncateVector(vector), k: RERANK_POOL_SIZE } } } : s
   );
   const displayHybrid: Record<string, unknown> = { queries: displaySubqueries };
   if (clause) displayHybrid.filter = clause;
@@ -201,6 +222,89 @@ function buildFusionTrace(): SearchTrace["fusion"] {
     normalization: HYBRID_NORMALIZATION,
     combination: HYBRID_COMBINATION,
     weights: { bm25: HYBRID_WEIGHTS[0], vector: HYBRID_WEIGHTS[1] },
+  };
+}
+
+// Reorders ImageResults to match a ranked list of image_ids; any result not in
+// the list is appended in its original order.
+function reorderByIds(results: ImageResult[], rankedIds: string[]): ImageResult[] {
+  const byId = new Map(results.map((r) => [r.image_id, r]));
+  const ordered: ImageResult[] = [];
+  for (const id of rankedIds) {
+    const r = byId.get(id);
+    if (r) { ordered.push(r); byId.delete(id); }
+  }
+  for (const r of byId.values()) ordered.push(r);
+  return ordered;
+}
+
+// LLM rerank stage with a cache: on a hit we reuse the stored order (no model
+// call); on a miss we invoke the vision reranker once, store the verdict, and
+// reuse it forever after. Any failure falls back to the hybrid order so the
+// panel never breaks on stage. Returns the top RESULT_SIZE and trace metadata.
+async function applyRerank(
+  corpus: string,
+  queryId: string,
+  queryText: string,
+  candidates: ImageResult[]
+): Promise<{ results: ImageResult[]; rerank: SearchTrace["rerank"] }> {
+  const considered = candidates.length;
+  const base: SearchTrace["rerank"] = {
+    applied: false,
+    model: rerankModelName(),
+    cache: "disabled",
+    candidates_considered: considered,
+    returned: Math.min(considered, RESULT_SIZE),
+  };
+
+  if (!isRerankEnabled() || considered === 0) {
+    return { results: candidates.slice(0, RESULT_SIZE), rerank: base };
+  }
+
+  const candidateIds = candidates.map((c) => c.image_id);
+  const cacheKey = computeCacheKey(corpus, queryText, candidateIds);
+
+  let status: RerankCacheStatus = "miss";
+  let rankedIds: string[] | null = null;
+  try {
+    await ensureRerankIndex();
+    rankedIds = await getCachedRerank(cacheKey);
+    if (rankedIds) {
+      status = "hit";
+    } else {
+      rankedIds = await rerankWithVision(
+        queryText,
+        candidates.map((c) => ({
+          image_id: c.image_id,
+          title: c.title,
+          description: c.description,
+          thumbnail_url: c.thumbnail_url,
+          medium_url: c.medium_url,
+        }))
+      );
+      if (rankedIds) {
+        await storeRerank(cacheKey, corpus, queryId, queryText, rankedIds);
+        status = "stored";
+      } else {
+        status = "fallback";
+      }
+    }
+  } catch (err) {
+    console.error("rerank_failed", { queryId, message: (err as Error)?.message });
+    status = "fallback";
+    rankedIds = null;
+  }
+
+  const ordered = rankedIds ? reorderByIds(candidates, rankedIds) : candidates;
+  return {
+    results: ordered.slice(0, RESULT_SIZE),
+    rerank: {
+      applied: status === "hit" || status === "stored",
+      model: rerankModelName(),
+      cache: status,
+      candidates_considered: considered,
+      returned: Math.min(considered, RESULT_SIZE),
+    },
   };
 }
 
@@ -257,17 +361,21 @@ async function handleSearch({
         : Promise.resolve({ results: [] as ImageResult[], query: {}, filterLabels: [] as string[] }),
     ]);
 
+    const queryText = step.display_text ?? bm25Keywords;
+    const reranked = await applyRerank(corpus, query_id, queryText, discoveryResult.results);
+
     const trace: SearchTrace = {
       embedding_source: "session_vector",
       bm25_query: bm25Result.query,
       hybrid_query: discoveryResult.query,
       fusion: buildFusionTrace(),
       filters_applied: discoveryResult.filterLabels,
+      rerank: reranked.rerank,
       bm25_result_count: bm25Result.results.length,
-      discovery_result_count: discoveryResult.results.length,
+      discovery_result_count: reranked.results.length,
     };
 
-    return NextResponse.json({ legacy: bm25Result.results, discovery: discoveryResult.results, corpus, trace });
+    return NextResponse.json({ legacy: bm25Result.results, discovery: reranked.results, corpus, trace });
   }
 
   // Standard query path
@@ -285,19 +393,22 @@ async function handleSearch({
       : Promise.resolve({ results: [] as ImageResult[], query: {}, filterLabels: [] as string[] }),
   ]);
 
+  const reranked = await applyRerank(corpus, query_id, query.display_text, discoveryResult.results);
+
   const trace: SearchTrace = {
     embedding_source: session_vector ? "session_vector" : "query_embedding",
     bm25_query: bm25Result.query,
     hybrid_query: discoveryResult.query,
     fusion: buildFusionTrace(),
     filters_applied: discoveryResult.filterLabels,
+    rerank: reranked.rerank,
     bm25_result_count: bm25Result.results.length,
-    discovery_result_count: discoveryResult.results.length,
+    discovery_result_count: reranked.results.length,
   };
 
   return NextResponse.json({
     legacy: bm25Result.results,
-    discovery: discoveryResult.results,
+    discovery: reranked.results,
     corpus,
     trace,
   });

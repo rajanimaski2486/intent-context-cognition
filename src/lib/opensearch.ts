@@ -22,7 +22,7 @@ export const SESSION_INDEX = "icc_sessions";
 // mean. Weights are [BM25, vector] and are deliberately semantic-dominant so the
 // "no useful keyword" thesis holds while the architecture is genuinely hybrid.
 export const HYBRID_PIPELINE = "reveal-hybrid";
-export const HYBRID_WEIGHTS: [number, number] = [0.2, 0.8];
+export const HYBRID_WEIGHTS: [number, number] = [0.1, 0.9];
 export const HYBRID_NORMALIZATION = "min_max";
 export const HYBRID_COMBINATION = "arithmetic_mean";
 
