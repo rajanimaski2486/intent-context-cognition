@@ -27,8 +27,8 @@ export function useCorpus(): CorpusContextValue {
 }
 
 const TOOLTIP: Record<CorpusMode, string> = {
-  standard: "Standard — 8k-token chunks, 1536-dim embeddings. Higher precision for focused, semantic queries.",
-  extended: "Extended — 20k-token chunks, 256-dim embeddings. Broader context windows for deep, long-form retrieval.",
+  standard: "Standard — 8,000 images, 1536-dim embeddings. Full-fidelity vectors for maximum semantic precision.",
+  extended: "Extended — 20,000 images, 256-dim embeddings. Compact vectors that scale further with a small precision trade-off.",
 };
 
 export function CorpusToggle() {
@@ -58,7 +58,7 @@ export function CorpusToggle() {
         </span>
         {isExtended ? "Extended" : "Standard"}
       </button>
-      <div className="pointer-events-none absolute bottom-full right-0 mb-2 w-64 rounded-md bg-zinc-800 border border-zinc-700 px-3 py-2 text-xs text-zinc-300 shadow-lg opacity-0 group-hover:opacity-100 transition-opacity z-50">
+      <div className="pointer-events-none absolute top-full right-0 mt-2 w-64 rounded-md bg-zinc-800 border border-zinc-700 px-3 py-2 text-xs text-zinc-300 shadow-lg opacity-0 group-hover:opacity-100 transition-opacity z-50">
         {TOOLTIP[corpus]}
       </div>
     </div>

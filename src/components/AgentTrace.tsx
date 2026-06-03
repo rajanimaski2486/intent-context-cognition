@@ -100,6 +100,9 @@ export default function AgentTrace({ queryId, active }: Props) {
       <div className="px-4 py-2 border-b border-zinc-800 flex items-center gap-2">
         <span className={`w-2 h-2 rounded-full ${streaming ? "bg-green-500 animate-pulse" : done ? "bg-green-700" : "bg-zinc-600"}`} />
         <span className="text-xs text-zinc-400 uppercase tracking-widest">Agent trace</span>
+        <span className="ml-auto text-[10px] text-zinc-600 italic">
+          illustrative reasoning — see Execution trace for the query that ran
+        </span>
       </div>
       <div
         ref={containerRef}

@@ -24,6 +24,14 @@ export interface PrecisionScore {
   discovery: number;
 }
 
+// Filter stage applied to the Discovery hybrid query for queries that declare
+// it (e.g. a "landscape hero image" or "exclude the luxury cluster" constraint).
+// These execute as a real OpenSearch filter — see buildFilterClause in the
+// search route — so the agent trace's filter claims are backed by execution.
+export type QueryFilter =
+  | { type: "aspect_ratio"; orientation: "landscape" | "portrait"; min_ratio?: number; label: string }
+  | { type: "exclude_tags"; tags: string[]; label: string };
+
 export interface Query {
   id: string;
   pillar: Pillar;
@@ -36,6 +44,7 @@ export interface Query {
   speaker_note: string;
   session_chain: SessionChain | null;
   trace_template: TraceTemplate | null;
+  filters?: QueryFilter[];
 }
 
 export interface JourneyStep {
@@ -52,6 +61,7 @@ export interface JourneyStep {
   trace_template: TraceTemplate | null;
   signal_labels: string[];
   speaker_note: string;
+  filters?: QueryFilter[];
 }
 
 export interface Journey {

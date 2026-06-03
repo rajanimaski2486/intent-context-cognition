@@ -57,8 +57,8 @@ function Panel({
         {loading
           ? Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} />)
           : results.length > 0
-          ? results.map((img) => (
-              <ImageCard key={img.image_id} image={img} variant={variant} />
+          ? results.map((img, i) => (
+              <ImageCard key={img.image_id} image={img} variant={variant} rank={i + 1} />
             ))
           : (
             <p className="col-span-3 text-zinc-600 text-xs text-center py-8">
@@ -83,7 +83,7 @@ export default function DualResults({ legacy, discovery, loading, precisionScore
       />
       <Panel
         label="Generative Discovery"
-        sublabel="Semantic · vector · session"
+        sublabel="Hybrid · BM25 + vector · session"
         results={discovery}
         loading={loading}
         variant="discovery"

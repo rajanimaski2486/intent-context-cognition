@@ -27906,25 +27906,31 @@
       "precision_score": null,
       "signal_labels": [
         "multi-constraint",
-        "domain filter",
-        "format + audience signal"
+        "format filter",
+        "tone via embedding"
       ],
-      "speaker_note": "Three constraints parsed simultaneously: domain, audience, format. One BM25 query handles none of them.",
+      "speaker_note": "Audience, tone, and a hard format constraint at once. The hybrid query carries tone in the vector while a real filter enforces landscape orientation. One BM25 query handles none of them.",
       "session_chain": null,
       "trace_template": {
         "steps": [
           "Multi-constraint query detected. Parsing constraints...",
-          "Domain flag: mental health — activating safe imagery filter.",
-          "Audience signal: young adults (18-25) — adjusting visual style register.",
-          "Format constraint: hero image — filtering by landscape orientation.",
-          "Tone requirement: hopeful, non-clinical, non-stigmatising.",
-          "Routing to editorial-grounded RAG pipeline...",
-          "Applying domain-appropriate content filter...",
-          "Filtering by aspect ratio: landscape (width > height * 1.5)...",
-          "Scoring by emotional tone: positive, open, outdoor-weighted...",
-          "Returning top 6 results. All pass safe imagery threshold."
+          "Audience signal: young adults (18-25) — biases the dense-vector register.",
+          "Tone requirement: hopeful, non-clinical — carried by the query embedding.",
+          "Issuing hybrid query: BM25 keywords + k-NN over the query embedding.",
+          "Applying filter stage: landscape orientation for hero placement (width > height × 1.3).",
+          "Fusing scores: min-max normalize + weighted arithmetic mean (BM25 0.2 / vector 0.8).",
+          "Re-ranking by fused score with the landscape filter enforced.",
+          "Returning top 6 results — landscape, semantically aligned to a hopeful register."
         ]
-      }
+      },
+      "filters": [
+        {
+          "type": "aspect_ratio",
+          "orientation": "landscape",
+          "min_ratio": 1.3,
+          "label": "landscape hero (width > height × 1.3)"
+        }
+      ]
     },
     {
       "id": "cognition_03",

@@ -1,7 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { getQueryById, validateQueryId, parseJourneyStepId, getJourneyStep } from "@/lib/queries";
-import { getOpenSearchClient, CORPUS_CONFIG, type CorpusMode } from "@/lib/opensearch";
+import { getQueryById, validateQueryId, parseJourneyStepId, getJourneyStep, type QueryFilter } from "@/lib/queries";
+import {
+  getOpenSearchClient,
+  ensureHybridPipeline,
+  CORPUS_CONFIG,
+  HYBRID_PIPELINE,
+  HYBRID_WEIGHTS,
+  HYBRID_NORMALIZATION,
+  HYBRID_COMBINATION,
+  type CorpusMode,
+} from "@/lib/opensearch";
 
 const RequestSchema = z.object({
   query_id: z.string(),
@@ -27,9 +36,16 @@ export interface ImageResult {
 export interface SearchTrace {
   embedding_source: "query_embedding" | "session_vector";
   bm25_query: object;
-  knn_query: object;
+  hybrid_query: object;
+  fusion: {
+    pipeline: string;
+    normalization: string;
+    combination: string;
+    weights: { bm25: number; vector: number };
+  };
+  filters_applied: string[];
   bm25_result_count: number;
-  knn_result_count: number;
+  discovery_result_count: number;
 }
 
 type SearchErrorCode =
@@ -103,26 +119,89 @@ function truncateVector(vector: number[]): string {
   return `[${preview}, … (${vector.length} dims)]`;
 }
 
-async function knnSearch(
+// Build a real OpenSearch filter clause from a query's declared filters. Returns
+// the clause to attach to the hybrid query plus human-readable labels for the
+// execution trace. Anything not expressible here is simply not claimed.
+function buildFilterClause(filters?: QueryFilter[]): { clause: object | null; labels: string[] } {
+  if (!filters || filters.length === 0) return { clause: null, labels: [] };
+  const must: object[] = [];
+  const mustNot: object[] = [];
+  const labels: string[] = [];
+
+  for (const f of filters) {
+    if (f.type === "aspect_ratio") {
+      const ratio = f.min_ratio ?? 1.3;
+      const source =
+        f.orientation === "landscape"
+          ? `doc['width'].value > doc['height'].value * ${ratio}`
+          : `doc['height'].value > doc['width'].value * ${ratio}`;
+      must.push({ script: { script: { source } } });
+      labels.push(f.label);
+    } else if (f.type === "exclude_tags") {
+      for (const t of f.tags) mustNot.push({ match: { tags: t } });
+      labels.push(f.label);
+    }
+  }
+
+  const bool: Record<string, object[]> = {};
+  if (must.length) bool.filter = must;
+  if (mustNot.length) bool.must_not = mustNot;
+  return { clause: { bool }, labels };
+}
+
+// Discovery panel: a real hybrid query (BM25 + kNN) fused by the normalization
+// search pipeline, with an optional filter stage. The vector subquery is
+// semantic-dominant via the pipeline weights so meaning still leads.
+async function hybridSearch(
   index: string,
-  vector: number[]
-): Promise<{ results: ImageResult[]; query: object }> {
+  vector: number[],
+  keywords: string,
+  filters?: QueryFilter[]
+): Promise<{ results: ImageResult[]; query: object; filterLabels: string[] }> {
   const client = getOpenSearchClient();
+  await ensureHybridPipeline();
+
+  // The fusion pipeline's weights expect a fixed number of subqueries, so the
+  // hybrid query always has exactly two: a BM25 slot (match_none when there are
+  // no keywords — e.g. minimal-signal queries — so the vector leads) and kNN.
+  const bm25Sub = keywords.trim()
+    ? { multi_match: { query: keywords, fields: ["title^2", "description", "tags"], type: "best_fields" } }
+    : { match_none: {} };
+  const subqueries: object[] = [bm25Sub, { knn: { dense_vector: { vector, k: 50 } } }];
+
+  const { clause, labels } = buildFilterClause(filters);
+
+  const hybrid: Record<string, unknown> = { queries: subqueries };
+  if (clause) hybrid.filter = clause;
+
   const resp = await client.search({
     index,
-    body: {
-      size: 6,
-      query: {
-        knn: { dense_vector: { vector, k: 6 } },
-      },
-    },
+    body: { size: 6, query: { hybrid } },
+    search_pipeline: HYBRID_PIPELINE,
   });
-  const queryBody = {
-    knn: {
-      dense_vector: { vector: truncateVector(vector), k: 6 },
-    },
+
+  // Display version with the dense vector truncated for the execution trace.
+  const displaySubqueries = subqueries.map((s) =>
+    "knn" in s ? { knn: { dense_vector: { vector: truncateVector(vector), k: 50 } } } : s
+  );
+  const displayHybrid: Record<string, unknown> = { queries: displaySubqueries };
+  if (clause) displayHybrid.filter = clause;
+  const query = { hybrid: displayHybrid, search_pipeline: HYBRID_PIPELINE };
+
+  return {
+    results: parseHits(resp.body.hits.hits as Record<string, unknown>[]),
+    query,
+    filterLabels: labels,
   };
-  return { results: parseHits(resp.body.hits.hits as Record<string, unknown>[]), query: queryBody };
+}
+
+function buildFusionTrace(): SearchTrace["fusion"] {
+  return {
+    pipeline: HYBRID_PIPELINE,
+    normalization: HYBRID_NORMALIZATION,
+    combination: HYBRID_COMBINATION,
+    weights: { bm25: HYBRID_WEIGHTS[0], vector: HYBRID_WEIGHTS[1] },
+  };
 }
 
 export async function POST(req: NextRequest) {
@@ -171,22 +250,24 @@ async function handleSearch({
     const searchVector = step.session_accumulated_embedding;
     const bm25Keywords = step.bm25_keywords ?? "";
 
-    const [bm25Result, knnResult] = await Promise.all([
+    const [bm25Result, discoveryResult] = await Promise.all([
       bm25Search(index, bm25Keywords),
       searchVector && searchVector.length > 0
-        ? knnSearch(index, searchVector)
-        : Promise.resolve({ results: [], query: {} }),
+        ? hybridSearch(index, searchVector, bm25Keywords, step.filters)
+        : Promise.resolve({ results: [] as ImageResult[], query: {}, filterLabels: [] as string[] }),
     ]);
 
     const trace: SearchTrace = {
       embedding_source: "session_vector",
       bm25_query: bm25Result.query,
-      knn_query: knnResult.query,
+      hybrid_query: discoveryResult.query,
+      fusion: buildFusionTrace(),
+      filters_applied: discoveryResult.filterLabels,
       bm25_result_count: bm25Result.results.length,
-      knn_result_count: knnResult.results.length,
+      discovery_result_count: discoveryResult.results.length,
     };
 
-    return NextResponse.json({ legacy: bm25Result.results, discovery: knnResult.results, corpus, trace });
+    return NextResponse.json({ legacy: bm25Result.results, discovery: discoveryResult.results, corpus, trace });
   }
 
   // Standard query path
@@ -197,24 +278,26 @@ async function handleSearch({
   const query = getQueryById(query_id, corpus)!;
   const searchVector = session_vector ?? query.embedding;
 
-  const [bm25Result, knnResult] = await Promise.all([
+  const [bm25Result, discoveryResult] = await Promise.all([
     bm25Search(index, query.bm25_keywords),
     searchVector.length > 0
-      ? knnSearch(index, searchVector)
-      : Promise.resolve({ results: [], query: {} }),
+      ? hybridSearch(index, searchVector, query.bm25_keywords, query.filters)
+      : Promise.resolve({ results: [] as ImageResult[], query: {}, filterLabels: [] as string[] }),
   ]);
 
   const trace: SearchTrace = {
     embedding_source: session_vector ? "session_vector" : "query_embedding",
     bm25_query: bm25Result.query,
-    knn_query: knnResult.query,
+    hybrid_query: discoveryResult.query,
+    fusion: buildFusionTrace(),
+    filters_applied: discoveryResult.filterLabels,
     bm25_result_count: bm25Result.results.length,
-    knn_result_count: knnResult.results.length,
+    discovery_result_count: discoveryResult.results.length,
   };
 
   return NextResponse.json({
     legacy: bm25Result.results,
-    discovery: knnResult.results,
+    discovery: discoveryResult.results,
     corpus,
     trace,
   });

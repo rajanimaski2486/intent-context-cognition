@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 
-export type ExecStepType = "embed" | "session" | "bm25" | "knn" | "llm";
+export type ExecStepType = "embed" | "session" | "bm25" | "knn" | "filter" | "fusion" | "llm";
 
 export interface ExecStep {
   id: string;
@@ -16,7 +16,9 @@ const TAG: Record<ExecStepType, { label: string; color: string }> = {
   embed:   { label: "EMBED",   color: "text-sky-400 border-sky-800 bg-sky-950" },
   session: { label: "SESSION", color: "text-purple-400 border-purple-800 bg-purple-950" },
   bm25:    { label: "BM25",    color: "text-orange-400 border-orange-800 bg-orange-950" },
-  knn:     { label: "KNN",     color: "text-green-400 border-green-800 bg-green-950" },
+  knn:     { label: "HYBRID",  color: "text-green-400 border-green-800 bg-green-950" },
+  filter:  { label: "FILTER",  color: "text-rose-400 border-rose-800 bg-rose-950" },
+  fusion:  { label: "FUSION",  color: "text-cyan-400 border-cyan-800 bg-cyan-950" },
   llm:     { label: "LLM",     color: "text-yellow-400 border-yellow-800 bg-yellow-950" },
 };
 

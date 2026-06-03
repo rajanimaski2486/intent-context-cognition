@@ -87,8 +87,8 @@ function ResultColumn({
         &ldquo;{step.display_text}&rdquo;
       </div>
       <div className="grid grid-cols-3 gap-1">
-        {results.slice(0, 6).map((img) => (
-          <ImageCard key={img.image_id} image={img} variant="discovery" />
+        {results.slice(0, 6).map((img, i) => (
+          <ImageCard key={img.image_id} image={img} variant="discovery" rank={i + 1} />
         ))}
         {results.length === 0 &&
           Array.from({ length: 6 }).map((_, i) => (
@@ -259,8 +259,8 @@ export default function JourneyPlayer({ journeys, corpus }: Props) {
                 <span className="text-[9px] text-zinc-600 italic">resets each step</span>
               </div>
               <div className="grid grid-cols-3 gap-1">
-                {(currentResults?.legacy ?? []).slice(0, 6).map((img) => (
-                  <ImageCard key={img.image_id} image={img} variant="legacy" />
+                {(currentResults?.legacy ?? []).slice(0, 6).map((img, i) => (
+                  <ImageCard key={img.image_id} image={img} variant="legacy" rank={i + 1} />
                 ))}
                 {(!currentResults || loading) &&
                   Array.from({ length: 6 }).map((_, i) => (
@@ -278,8 +278,8 @@ export default function JourneyPlayer({ journeys, corpus }: Props) {
                 <span className="text-[9px] text-green-800 italic">builds on prior steps</span>
               </div>
               <div className="grid grid-cols-3 gap-1">
-                {(currentResults?.discovery ?? []).slice(0, 6).map((img) => (
-                  <ImageCard key={img.image_id} image={img} variant="discovery" />
+                {(currentResults?.discovery ?? []).slice(0, 6).map((img, i) => (
+                  <ImageCard key={img.image_id} image={img} variant="discovery" rank={i + 1} />
                 ))}
                 {(!currentResults || loading) &&
                   Array.from({ length: 6 }).map((_, i) => (

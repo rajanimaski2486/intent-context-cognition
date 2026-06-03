@@ -4,9 +4,10 @@ import ScoreOverlay from "./ScoreOverlay";
 interface Props {
   image: ImageResult;
   variant: "legacy" | "discovery";
+  rank: number;
 }
 
-export default function ImageCard({ image, variant }: Props) {
+export default function ImageCard({ image, variant, rank }: Props) {
   return (
     <a
       href={image.pexels_url}
@@ -27,7 +28,7 @@ export default function ImageCard({ image, variant }: Props) {
           No image
         </div>
       )}
-      <ScoreOverlay score={image.score} variant={variant} />
+      <ScoreOverlay score={image.score} variant={variant} rank={rank} />
       <div className="px-2 py-1.5">
         <p className="text-xs text-zinc-300 truncate leading-snug">
           {image.title || "Untitled"}

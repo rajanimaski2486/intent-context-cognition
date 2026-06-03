@@ -140,7 +140,7 @@ function AppContent() {
         steps.push({
           id: "llm",
           type: "llm",
-          label: "LLM agent reasoning invoked",
+          label: "LLM narrates the agent trace (illustrative, not part of retrieval)",
           sublabel: "NVIDIA NIM meta/llama-3.1-8b-instruct → OpenAI gpt-4o-mini → scripted fallback",
         });
       }
@@ -165,19 +165,36 @@ function AppContent() {
         setDiscovery(data.discovery);
 
         if (data.trace) {
+          const index = corpus === "extended" ? "icc_images_ext" : "icc_images";
           steps.push({
             id: "bm25",
             type: "bm25",
-            label: "BM25 keyword search",
+            label: "Legacy panel — BM25 keyword search",
             sublabel: `${data.trace.bm25_result_count} results · multi_match on title^2 / description / tags`,
-            detail: { index: corpus === "extended" ? "icc_images_ext" : "icc_images", query: data.trace.bm25_query, size: 6 },
+            detail: { index, query: data.trace.bm25_query, size: 6 },
           });
           steps.push({
             id: "knn",
             type: "knn",
-            label: `k-NN vector search${searchVector ? " (session-aware)" : ""}`,
-            sublabel: `${data.trace.knn_result_count} results · cosine similarity · HNSW/faiss`,
-            detail: { index: corpus === "extended" ? "icc_images_ext" : "icc_images", query: data.trace.knn_query, size: 6 },
+            label: `Discovery panel — hybrid query (BM25 + k-NN${searchVector ? ", session-aware" : ""})`,
+            sublabel: `${data.trace.discovery_result_count} results · semantic-dominant hybrid · HNSW cosine`,
+            detail: { index, query: data.trace.hybrid_query, size: 6 },
+          });
+          if (data.trace.filters_applied.length > 0) {
+            steps.push({
+              id: "filter",
+              type: "filter",
+              label: "Filter stage applied to Discovery",
+              sublabel: data.trace.filters_applied.join(" · "),
+              detail: (data.trace.hybrid_query as { hybrid?: { filter?: object } })?.hybrid?.filter ?? {},
+            });
+          }
+          steps.push({
+            id: "fusion",
+            type: "fusion",
+            label: "Score fusion (normalize + weighted combine)",
+            sublabel: `${data.trace.fusion.normalization} · ${data.trace.fusion.combination} · BM25 ${data.trace.fusion.weights.bm25} / vector ${data.trace.fusion.weights.vector}`,
+            detail: data.trace.fusion,
           });
         }
       }
