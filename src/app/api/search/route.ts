@@ -21,17 +21,33 @@ import {
   isRerankEnabled,
   type RerankCacheStatus,
 } from "@/lib/rerank";
+import { embedQuery, EMBEDDING_MODEL } from "@/lib/embed";
+import { validateQueryText } from "@/lib/guardrails";
 
 // Candidate pool the LLM reranker judges before we return the top 6.
 const RERANK_POOL_SIZE = 50;
 const RESULT_SIZE = 6;
 
+// Cumulative layers for the hero "layer stack" view. Each is additive on top of
+// a keyword + expansion baseline. context implies intent (it swaps in the
+// session-accumulated vector); cognition adds the filter + rerank stage.
+const LayersSchema = z.object({
+  expansion: z.boolean(),
+  intent: z.boolean(),
+  context: z.boolean(),
+  cognition: z.boolean(),
+});
+
 const RequestSchema = z.object({
-  query_id: z.string(),
+  query_id: z.string().optional(),
+  query_text: z.string().optional(),
   corpus: z.enum(["standard", "extended"]).default("standard"),
   session_vector: z.array(z.number()).optional(),
   journey_session: z.boolean().optional(),
+  layers: LayersSchema.optional(),
 });
+
+export type Layers = z.infer<typeof LayersSchema>;
 
 export interface ImageResult {
   image_id: string;
@@ -315,16 +331,196 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
   }
 
-  const { query_id, corpus, session_vector, journey_session } = parsed.data;
+  const { query_id, query_text, corpus, session_vector, journey_session, layers } = parsed.data;
   const index = CORPUS_CONFIG[corpus].index;
 
+  // Free-form typed query path.
+  if (query_text !== undefined) {
+    return await handleFreeformSearch({ query_text, corpus, index });
+  }
+
+  if (!query_id) {
+    return NextResponse.json({ error: "Provide query_id or query_text" }, { status: 400 });
+  }
+
   try {
+    if (layers) {
+      return await handleLayeredSearch({ query_id, corpus, layers, index });
+    }
     return await handleSearch({ query_id, corpus, session_vector, journey_session, index });
   } catch (err) {
     const { code, status, detail } = classifyOpenSearchError(err);
     console.error("search_failed", { code, index, message: (err as Error)?.message });
     return NextResponse.json({ error: code, detail }, { status });
   }
+}
+
+// Free-form search: validate the typed text, embed it live, then run the same
+// BM25-vs-hybrid comparison the curated queries use. Guardrails run first so junk
+// or disallowed input never reaches OpenAI or OpenSearch.
+async function handleFreeformSearch({
+  query_text,
+  corpus,
+  index,
+}: {
+  query_text: string;
+  corpus: CorpusMode;
+  index: string;
+}): Promise<NextResponse> {
+  const text = query_text.trim();
+  const guard = validateQueryText(text);
+  if (!guard.ok) {
+    return NextResponse.json(
+      { error: "invalid_query", code: guard.code, detail: guard.message },
+      { status: 422 }
+    );
+  }
+
+  let vector: number[];
+  try {
+    vector = await embedQuery(text, corpus);
+  } catch (err) {
+    console.error("embed_failed", { message: (err as Error)?.message });
+    return NextResponse.json(
+      { error: "embedding_unavailable", detail: "Could not embed the query — the embedding service is unreachable." },
+      { status: 502 }
+    );
+  }
+
+  try {
+    const [bm25Result, discoveryResult] = await Promise.all([
+      bm25Search(index, text),
+      hybridSearch(index, vector, text),
+    ]);
+
+    const reranked = await applyRerank(corpus, `freeform:${text}`, text, discoveryResult.results);
+
+    const trace: SearchTrace = {
+      embedding_source: "query_embedding",
+      bm25_query: bm25Result.query,
+      hybrid_query: discoveryResult.query,
+      fusion: buildFusionTrace(),
+      filters_applied: discoveryResult.filterLabels,
+      rerank: reranked.rerank,
+      bm25_result_count: bm25Result.results.length,
+      discovery_result_count: reranked.results.length,
+    };
+
+    return NextResponse.json({
+      legacy: bm25Result.results,
+      discovery: reranked.results,
+      corpus,
+      query_text: text,
+      embedding: { model: EMBEDDING_MODEL, dimensions: CORPUS_CONFIG[corpus].dimensions },
+      trace,
+    });
+  } catch (err) {
+    const { code, status, detail } = classifyOpenSearchError(err);
+    console.error("freeform_search_failed", { code, index, message: (err as Error)?.message });
+    return NextResponse.json({ error: code, detail }, { status });
+  }
+}
+
+export interface LayeredTrace {
+  vector_source: "none" | "query_embedding" | "session_vector";
+  bm25_keywords: string;
+  expansion_applied: boolean;
+  filters_applied: string[];
+  rerank: SearchTrace["rerank"] | null;
+  result_count: number;
+  query: object;
+}
+
+// Cumulative layer view. Runs the retrieval pipeline UP TO the highest active
+// layer on a single shared query (a journey's step 3), so the audience can watch
+// the same result set rebuild as Intent, Context, then Cognition switch on top of
+// the keyword + expansion baseline. Returns one result set per call.
+async function handleLayeredSearch({
+  query_id,
+  corpus,
+  layers,
+  index,
+}: {
+  query_id: string;
+  corpus: CorpusMode;
+  layers: Layers;
+  index: string;
+}): Promise<NextResponse> {
+  const parsedStep = parseJourneyStepId(query_id);
+  if (!parsedStep || parsedStep.step !== 3) {
+    return NextResponse.json(
+      { error: `Layer view requires a step-3 query id (got: ${query_id})` },
+      { status: 400 }
+    );
+  }
+  const step = getJourneyStep(parsedStep.journeyId, parsedStep.step, corpus);
+  if (!step) {
+    return NextResponse.json({ error: `Unknown journey step: ${query_id}` }, { status: 400 });
+  }
+
+  const baseKeywords = step.bm25_keywords ?? "";
+  const expansion = step.bm25_expansion ?? "";
+  const useVector = layers.intent || layers.context;
+  const vector = layers.context ? step.session_accumulated_embedding : step.embedding;
+
+  // Keyword-only baseline (layers: expansion only). Naive query expansion is
+  // folded into the keyword string here — and nowhere else — so the audience
+  // sees exactly what expansion drags in before any semantics arrive.
+  if (!useVector) {
+    const keywords = expansion ? `${baseKeywords} ${expansion}` : baseKeywords;
+    const bm25 = await bm25Search(index, keywords);
+    const trace: LayeredTrace = {
+      vector_source: "none",
+      bm25_keywords: keywords,
+      expansion_applied: Boolean(expansion),
+      filters_applied: [],
+      rerank: null,
+      result_count: bm25.results.length,
+      query: bm25.query,
+    };
+    return NextResponse.json({
+      query_id,
+      corpus,
+      active_layers: layers,
+      results: bm25.results.slice(0, RESULT_SIZE),
+      trace,
+    });
+  }
+
+  // Semantic layers. Once meaning is a vector, the keyword subquery reverts to
+  // the base keywords — the expansion crutch is no longer needed (and it was
+  // dragging in the wrong cluster). Filters + rerank only at the Cognition layer.
+  const filters = layers.cognition ? step.filters : undefined;
+  const hybrid = await hybridSearch(index, vector, baseKeywords, filters);
+
+  let results = hybrid.results;
+  let rerankTrace: SearchTrace["rerank"] | null = null;
+  if (layers.cognition) {
+    const queryText = step.display_text ?? baseKeywords;
+    const reranked = await applyRerank(corpus, query_id, queryText, hybrid.results);
+    results = reranked.results;
+    rerankTrace = reranked.rerank;
+  } else {
+    results = hybrid.results.slice(0, RESULT_SIZE);
+  }
+
+  const trace: LayeredTrace = {
+    vector_source: layers.context ? "session_vector" : "query_embedding",
+    bm25_keywords: baseKeywords,
+    expansion_applied: false,
+    filters_applied: hybrid.filterLabels,
+    rerank: rerankTrace,
+    result_count: results.length,
+    query: hybrid.query,
+  };
+
+  return NextResponse.json({
+    query_id,
+    corpus,
+    active_layers: layers,
+    results: results.slice(0, RESULT_SIZE),
+    trace,
+  });
 }
 
 async function handleSearch({

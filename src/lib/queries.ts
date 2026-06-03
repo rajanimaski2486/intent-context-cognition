@@ -4,7 +4,7 @@ import extendedData from "@/data/queries_extended.json";
 
 export type { CorpusMode };
 
-export type Pillar = "intent" | "context" | "cognition" | "precision" | "journey";
+export type Pillar = "layers" | "intent" | "context" | "cognition" | "precision" | "journey";
 
 export interface SessionChain {
   session_id: string;
@@ -54,6 +54,10 @@ export interface JourneyStep {
   narrative: string;
   display_text: string | null;
   bm25_keywords: string | null;
+  // Controlled "naive query expansion" terms for the keyword baseline in the
+  // cumulative layer view. Deliberately drift toward the wrong cluster so the
+  // +Cognition filter has visible work to do. Only populated on step 3.
+  bm25_expansion?: string;
   embedding: number[];
   session_accumulated_embedding: number[];
   session_accumulates: boolean;
@@ -124,4 +128,46 @@ export function validateJourneyStepId(id: string, corpus: CorpusMode = "standard
   const parsed = parseJourneyStepId(id);
   if (!parsed) return false;
   return getJourneyStep(parsed.journeyId, parsed.step, corpus) !== undefined;
+}
+
+// The cumulative layer view (hero) is driven by each journey's step 3 — the only
+// query where all three pillars are simultaneously real: a raw embedding (Intent),
+// a session_accumulated_embedding carrying steps 1-2 (Context), and filters +
+// agent trace (Cognition), on top of a keyword + expansion baseline.
+export interface LayerScenario {
+  journeyId: string;
+  label: string;       // e.g. "Creative Director"
+  subtitle: string;
+  query_id: string;    // "journey_a_step_3"
+  display_text: string;
+  bm25_keywords: string;
+  bm25_expansion: string;
+  signal_labels: string[];
+  trace_template: TraceTemplate | null;
+  speaker_note: string;
+  // The two queries that came before this one in the conversation, shown as the
+  // context thread the session vector carries.
+  prior_thread: string[];
+}
+
+export function getLayerScenarios(corpus: CorpusMode = "standard"): LayerScenario[] {
+  return loadJourneys(corpus).map((j) => {
+    const step3 = j.steps.find((s) => s.step === 3)!;
+    const prior = j.steps
+      .filter((s) => s.step < 3 && s.display_text)
+      .map((s) => s.display_text as string);
+    return {
+      journeyId: j.id,
+      label: j.label,
+      subtitle: j.subtitle,
+      query_id: `${j.id}_step_3`,
+      display_text: step3.display_text ?? "",
+      bm25_keywords: step3.bm25_keywords ?? "",
+      bm25_expansion: step3.bm25_expansion ?? "",
+      signal_labels: step3.signal_labels,
+      trace_template: step3.trace_template,
+      speaker_note: step3.speaker_note,
+      prior_thread: prior,
+    };
+  });
 }

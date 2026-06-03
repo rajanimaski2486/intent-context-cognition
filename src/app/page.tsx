@@ -1,234 +1,140 @@
 "use client";
 
-import { useState, useEffect, useRef, Suspense } from "react";
-import { useSearchParams } from "next/navigation";
-import type { Pillar, Query } from "@/lib/queries";
-import standardData from "@/data/queries_standard.json";
-import extendedData from "@/data/queries_extended.json";
+import { useState } from "react";
 import type { ImageResult, SearchTrace } from "@/app/api/search/route";
 import { CorpusProvider, CorpusToggle, useCorpus } from "@/components/CorpusToggle";
-import QuerySelector from "@/components/QuerySelector";
 import DualResults from "@/components/DualResults";
-import SessionFlow from "@/components/SessionFlow";
-import AgentTrace from "@/components/AgentTrace";
-import ExecutionTrace, { type ExecStep } from "@/components/ExecutionTrace";
-import SignalExtractor from "@/components/SignalExtractor";
-import JourneyPlayer from "@/components/JourneyPlayer";
-import type { Journey } from "@/lib/queries";
+import LayerStack from "@/components/LayerStack";
+import { getLayerScenarios } from "@/lib/queries";
 
-const REGISTRIES = {
-  standard: {
-    queries: standardData.queries as Query[],
-    journeys: (standardData as unknown as { journeys: Journey[] }).journeys ?? [],
-  },
-  extended: {
-    queries: extendedData.queries as Query[],
-    journeys: (extendedData as unknown as { journeys: Journey[] }).journeys ?? [],
-  },
-};
+type View = "search" | "reveal";
 
-function SpeakerNote({ query }: { query: Query }) {
-  const params = useSearchParams();
-  if (!params.get("speaker")) return null;
+// Suggested queries — evocative phrases where meaning beats keyword match. These
+// are conveniences only; they run through the same free-form path as typed input.
+const SAMPLE_QUERIES = [
+  "stillness that doesn't feel empty",
+  "the feeling of being completely absorbed in your work",
+  "a color that feels like 3am",
+  "joy that isn't loud",
+  "the quiet before a big decision",
+  "morning light through a kitchen window",
+  "nostalgia for a place you've never been",
+  "comfortable solitude",
+];
 
+interface EmbeddingMeta {
+  model: string;
+  dimensions: number;
+}
+
+function QueryTrace({ trace, embedding }: { trace: SearchTrace; embedding: EmbeddingMeta | null }) {
   return (
-    <div className="fixed bottom-4 right-4 max-w-xs bg-zinc-900 border border-amber-700 rounded-lg px-4 py-3 shadow-xl z-50">
-      <p className="text-[10px] text-amber-500 uppercase tracking-widest mb-1.5">Speaker note</p>
-      <p className="text-xs text-zinc-200 leading-relaxed">{query.speaker_note}</p>
+    <div className="rounded-lg border border-zinc-800 bg-zinc-950 flex flex-col text-[11px]">
+      <div className="px-4 py-3 border-b border-zinc-800 flex flex-col gap-1">
+        <p className="text-[10px] uppercase tracking-widest text-zinc-500">Query handling</p>
+        {embedding && (
+          <p className="text-zinc-300 font-mono">
+            embed · {embedding.model} · {embedding.dimensions}d
+          </p>
+        )}
+        <p className="text-zinc-300 font-mono">
+          legacy BM25: {trace.bm25_result_count} · discovery hybrid: {trace.discovery_result_count}
+        </p>
+        <p className="text-zinc-300 font-mono">
+          fusion · {trace.fusion.normalization} · {trace.fusion.combination} · BM25{" "}
+          {trace.fusion.weights.bm25} / vector {trace.fusion.weights.vector}
+        </p>
+        {trace.rerank && (
+          <p className="text-zinc-300 font-mono">
+            rerank · {trace.rerank.model} · {trace.rerank.cache} ·{" "}
+            {trace.rerank.candidates_considered}→{trace.rerank.returned}
+          </p>
+        )}
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-zinc-800">
+        <div className="px-4 py-3">
+          <p className="text-[10px] uppercase tracking-widest text-red-400/70 mb-1.5">
+            Legacy — BM25 payload
+          </p>
+          <pre className="font-mono text-[10.5px] text-zinc-400 leading-relaxed max-h-64 overflow-auto whitespace-pre-wrap break-all">
+            {JSON.stringify(trace.bm25_query, null, 2)}
+          </pre>
+        </div>
+        <div className="px-4 py-3">
+          <p className="text-[10px] uppercase tracking-widest text-green-400/70 mb-1.5">
+            Discovery — hybrid payload
+          </p>
+          <pre className="font-mono text-[10.5px] text-green-300/90 leading-relaxed max-h-64 overflow-auto whitespace-pre-wrap break-all">
+            {JSON.stringify(trace.hybrid_query, null, 2)}
+          </pre>
+        </div>
+      </div>
     </div>
   );
 }
 
 function AppContent() {
-  const { corpus, setCorpus } = useCorpus();
-  const [activePillar, setActivePillar] = useState<Pillar>("intent");
-  const [activeQuery, setActiveQuery] = useState<Query | null>(null);
+  const { corpus } = useCorpus();
+  const [view, setView] = useState<View>("search");
+  const [input, setInput] = useState("");
+  const [submitted, setSubmitted] = useState<string | null>(null);
   const [legacy, setLegacy] = useState<ImageResult[]>([]);
   const [discovery, setDiscovery] = useState<ImageResult[]>([]);
+  const [trace, setTrace] = useState<SearchTrace | null>(null);
+  const [embedding, setEmbedding] = useState<EmbeddingMeta | null>(null);
   const [loading, setLoading] = useState(false);
-  const [traceActive, setTraceActive] = useState(false);
-  const [traceKey, setTraceKey] = useState(0);
-  const [execSteps, setExecSteps] = useState<ExecStep[]>([]);
-  const prevCorpus = useRef(corpus);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [showTrace, setShowTrace] = useState(false);
 
-  const allQueries = REGISTRIES[corpus].queries;
-  const allJourneys = REGISTRIES[corpus].journeys;
+  const runSearch = async (text: string) => {
+    const q = text.trim();
+    if (!q || loading) return;
 
-  // reset on corpus switch
-  useEffect(() => {
-    if (prevCorpus.current !== corpus) {
-      prevCorpus.current = corpus;
-      setActivePillar("intent");
-      setActiveQuery(null);
-      setLegacy([]);
-      setDiscovery([]);
-      setTraceActive(false);
-      setExecSteps([]);
-    }
-  }, [corpus]);
-
-  const handlePillarChange = (p: Pillar) => {
-    setActivePillar(p);
-    setActiveQuery(null);
-    setLegacy([]);
-    setDiscovery([]);
-    setTraceActive(false);
-    setExecSteps([]);
-  };
-
-  const handleQuerySelect = async (query: Query) => {
-    setActiveQuery(query);
+    setSubmitted(q);
     setLoading(true);
+    setNotice(null);
     setLegacy([]);
     setDiscovery([]);
-    setTraceActive(false);
-    setExecSteps([]);
-
-    const steps: ExecStep[] = [];
+    setTrace(null);
+    setEmbedding(null);
 
     try {
-      let searchVector: number[] | undefined;
-
-      if (query.pillar === "context" && query.session_chain) {
-        const sessionResp = await fetch("/api/session", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            session_id: query.session_chain.session_id,
-            query_id: query.id,
-            corpus,
-            step: query.session_chain.step,
-          }),
-        });
-        if (sessionResp.ok) {
-          const sessionData = (await sessionResp.json()) as {
-            session_vector: number[];
-            trace?: {
-              prior_query_count: number;
-              queries: string[];
-              weights: number[];
-              decay_base: number;
-              pivot_applied: boolean;
-              pivot_scale?: number;
-            };
-          };
-          searchVector = sessionData.session_vector;
-          if (sessionData.trace) {
-            steps.push({
-              id: "session",
-              type: "session",
-              label: "Session vector computed (recency decay)",
-              sublabel: sessionData.trace.pivot_applied
-                ? `${sessionData.trace.prior_query_count} prior queries · pivot applied (scale ${sessionData.trace.pivot_scale})`
-                : `${sessionData.trace.prior_query_count} prior queries blended`,
-              detail: sessionData.trace,
-            });
-          }
-        }
-      }
-
-      steps.push({
-        id: "embed",
-        type: "embed",
-        label: searchVector
-          ? "Session vector used for k-NN search"
-          : "Query embedding loaded (OpenAI text-embedding-3-small, pre-computed)",
-        sublabel: `${corpus === "extended" ? "256" : "1536"}-dimensional dense vector`,
-      });
-
-      if (query.pillar === "cognition") {
-        steps.push({
-          id: "llm",
-          type: "llm",
-          label: "LLM narrates the agent trace (illustrative, not part of retrieval)",
-          sublabel: "NVIDIA NIM meta/llama-3.1-8b-instruct → OpenAI gpt-4o-mini → scripted fallback",
-        });
-      }
-
-      const searchResp = await fetch("/api/search", {
+      const resp = await fetch("/api/search", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          query_id: query.id,
-          corpus,
-          ...(searchVector ? { session_vector: searchVector } : {}),
-        }),
+        body: JSON.stringify({ query_text: q, corpus }),
       });
+      const data = await resp.json();
 
-      if (searchResp.ok) {
-        const data = (await searchResp.json()) as {
-          legacy: ImageResult[];
-          discovery: ImageResult[];
-          trace?: SearchTrace;
-        };
-        setLegacy(data.legacy);
-        setDiscovery(data.discovery);
-
-        if (data.trace) {
-          const index = corpus === "extended" ? "icc_images_ext" : "icc_images";
-          steps.push({
-            id: "bm25",
-            type: "bm25",
-            label: "Legacy panel — BM25 keyword search",
-            sublabel: `${data.trace.bm25_result_count} results · multi_match on title^2 / description / tags`,
-            detail: { index, query: data.trace.bm25_query, size: 6 },
-          });
-          steps.push({
-            id: "knn",
-            type: "knn",
-            label: `Discovery panel — hybrid query (BM25 + k-NN${searchVector ? ", session-aware" : ""})`,
-            sublabel: `${data.trace.discovery_result_count} results · semantic-dominant hybrid · HNSW cosine`,
-            detail: { index, query: data.trace.hybrid_query, size: 6 },
-          });
-          if (data.trace.filters_applied.length > 0) {
-            steps.push({
-              id: "filter",
-              type: "filter",
-              label: "Filter stage applied to Discovery",
-              sublabel: data.trace.filters_applied.join(" · "),
-              detail: (data.trace.hybrid_query as { hybrid?: { filter?: object } })?.hybrid?.filter ?? {},
-            });
-          }
-          steps.push({
-            id: "fusion",
-            type: "fusion",
-            label: "Score fusion (normalize + weighted combine)",
-            sublabel: `${data.trace.fusion.normalization} · ${data.trace.fusion.combination} · BM25 ${data.trace.fusion.weights.bm25} / vector ${data.trace.fusion.weights.vector}`,
-            detail: data.trace.fusion,
-          });
-          if (data.trace.rerank) {
-            const rk = data.trace.rerank;
-            const cacheLabel =
-              rk.cache === "hit" ? "cache hit (no model call)"
-              : rk.cache === "stored" ? "model call → cached"
-              : rk.cache === "fallback" ? "model unavailable → hybrid order"
-              : rk.cache === "disabled" ? "disabled"
-              : rk.cache;
-            steps.push({
-              id: "rerank",
-              type: "rerank",
-              label: `LLM vision rerank (${rk.candidates_considered}→${rk.returned})`,
-              sublabel: `${rk.model} · ${cacheLabel}`,
-              detail: rk,
-            });
-          }
-        }
+      if (!resp.ok) {
+        // Guardrail rejection (422) or service error — show the message, no results.
+        setNotice(data.detail ?? "Something went wrong with that search. Try again.");
+        setSubmitted(null);
+        return;
       }
+
+      setLegacy(data.legacy ?? []);
+      setDiscovery(data.discovery ?? []);
+      setTrace(data.trace ?? null);
+      setEmbedding(data.embedding ?? null);
+
+      if ((data.legacy?.length ?? 0) === 0 && (data.discovery?.length ?? 0) === 0) {
+        setNotice("No images matched that query. Try describing it a different way.");
+      }
+    } catch {
+      setNotice("Couldn't reach the search service. Check the connection and try again.");
+      setSubmitted(null);
     } finally {
-      setExecSteps(steps);
       setLoading(false);
-      if (query.pillar === "cognition") {
-        setTraceKey((k) => k + 1);
-        setTraceActive(true);
-      }
     }
   };
 
-  const isJourneyPillar = activePillar === "journey";
-  const showResults = activeQuery !== null && !isJourneyPillar;
-  const showSession = activeQuery?.pillar === "context";
-  const showTrace = activeQuery?.pillar === "cognition";
-  const showPrecision = corpus === "extended" && activeQuery?.precision_score != null;
+  const onSelectSample = (text: string) => {
+    setInput(text);
+    runSearch(text);
+  };
+
+  const hasResults = submitted !== null && (legacy.length > 0 || discovery.length > 0);
 
   return (
     <div className="min-h-screen flex flex-col bg-[#0a0a0a]">
@@ -269,57 +175,133 @@ function AppContent() {
         </div>
       </header>
 
-      <main className="flex-1 px-4 py-5 flex flex-col gap-5 max-w-5xl w-full mx-auto">
-        <QuerySelector
-          queries={allQueries}
-          activePillar={activePillar}
-          activeQueryId={activeQuery?.id ?? null}
-          loading={loading}
-          onPillarChange={handlePillarChange}
-          onQuerySelect={handleQuerySelect}
-        />
+      <main className="flex-1 px-4 py-6 flex flex-col gap-5 max-w-5xl w-full mx-auto">
+        {/* View tabs */}
+        <div className="flex gap-2 flex-wrap items-center">
+          <button
+            onClick={() => setView("search")}
+            className={`px-4 py-1.5 rounded-full text-sm font-medium border transition-colors ${
+              view === "search"
+                ? "border-green-700 bg-green-900/30 text-green-300"
+                : "border-zinc-700 bg-zinc-900 text-zinc-300 hover:border-zinc-500 hover:text-zinc-200"
+            }`}
+          >
+            Search
+          </button>
+          <button
+            onClick={() => setView("reveal")}
+            className={`px-4 py-1.5 rounded-full text-sm font-medium border transition-colors ${
+              view === "reveal"
+                ? "border-green-700 bg-green-900/30 text-green-300"
+                : "border-zinc-600 bg-zinc-900 text-zinc-200 hover:border-green-700 hover:text-green-300"
+            }`}
+          >
+            Reveal
+            <span className="ml-1.5 text-[9px] border border-green-800 rounded px-1 py-px text-green-500">
+              3 pillars
+            </span>
+          </button>
+        </div>
 
-        {isJourneyPillar && (
-          <JourneyPlayer journeys={allJourneys} corpus={corpus} />
+        {view === "reveal" && (
+          <LayerStack scenarios={getLayerScenarios(corpus)} corpus={corpus} />
         )}
 
-        {showResults && (
+        {view === "search" && (
           <>
-            <div className="text-sm text-zinc-400 italic border-l-2 border-green-800 pl-3">
-              &ldquo;{activeQuery!.display_text}&rdquo;
-            </div>
-
-            <SignalExtractor query={activeQuery!} />
-
-            {showSession && <SessionFlow query={activeQuery!} />}
-
-            <ExecutionTrace steps={execSteps} />
-
-            <DualResults
-              legacy={legacy}
-              discovery={discovery}
-              loading={loading}
-              precisionScore={showPrecision ? activeQuery!.precision_score : null}
+        {/* Search box */}
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            runSearch(input);
+          }}
+          className="flex flex-col gap-2"
+        >
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="Describe a scene, mood, or feeling — no keywords required…"
+              maxLength={200}
+              className="flex-1 rounded-lg border border-zinc-700 bg-zinc-900 px-4 py-3 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-green-700 transition-colors"
             />
+            <button
+              type="submit"
+              disabled={loading || input.trim().length === 0}
+              className="px-5 py-3 text-sm font-medium border border-green-700 rounded-lg text-green-300 bg-green-900/20 hover:bg-green-900/40 disabled:opacity-40 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
+            >
+              {loading ? "Searching…" : "Search"}
+            </button>
+          </div>
+          <p className="text-[11px] text-zinc-600">
+            Generative Discovery embeds your words and searches by meaning. Legacy search matches
+            keywords only.
+          </p>
+        </form>
 
-            {showTrace && (
-              <AgentTrace
-                key={traceKey}
-                queryId={activeQuery!.id}
-                active={traceActive}
-              />
+        {/* Sample queries */}
+        <div className="flex flex-col gap-2">
+          <span className="text-[10px] text-zinc-600 uppercase tracking-widest">Try a sample</span>
+          <div className="flex flex-wrap gap-2">
+            {SAMPLE_QUERIES.map((q) => (
+              <button
+                key={q}
+                onClick={() => onSelectSample(q)}
+                disabled={loading}
+                className={`text-left rounded-full border px-3 py-1.5 text-xs transition-colors ${
+                  submitted === q
+                    ? "border-green-600 bg-green-900/20 text-green-200"
+                    : "border-zinc-700 bg-zinc-900 text-zinc-300 hover:border-zinc-500 hover:bg-zinc-800"
+                } ${loading ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
+              >
+                &ldquo;{q}&rdquo;
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Notice (guardrail / no-result / error) */}
+        {notice && (
+          <div className="rounded-lg border border-amber-800 bg-amber-950/40 px-4 py-3 text-sm text-amber-300">
+            {notice}
+          </div>
+        )}
+
+        {/* Results */}
+        {(loading || hasResults) && (
+          <>
+            {submitted && (
+              <div className="text-sm text-zinc-400 italic border-l-2 border-green-800 pl-3">
+                &ldquo;{submitted}&rdquo;
+              </div>
+            )}
+            <DualResults legacy={legacy} discovery={discovery} loading={loading} />
+
+            {trace && !loading && (
+              <div className="flex flex-col gap-2">
+                <button
+                  onClick={() => setShowTrace((v) => !v)}
+                  className="self-start text-xs text-zinc-400 hover:text-zinc-200 flex items-center gap-1.5 transition-colors"
+                >
+                  <span className={`transition-transform ${showTrace ? "rotate-90" : ""}`}>▸</span>
+                  {showTrace ? "Hide query trace" : "Show query trace"}
+                </button>
+                {showTrace && <QueryTrace trace={trace} embedding={embedding} />}
+              </div>
             )}
           </>
         )}
 
-        {!showResults && !isJourneyPillar && (
+        {/* Empty state */}
+        {!loading && !hasResults && !notice && (
           <div className="flex-1 flex items-center justify-center text-zinc-700 text-sm py-16">
-            Select a query above to see the difference.
+            Type a query or pick a sample to see meaning beat keywords.
           </div>
         )}
+          </>
+        )}
       </main>
-
-      {showResults && activeQuery && <SpeakerNote query={activeQuery} />}
     </div>
   );
 }
@@ -327,9 +309,7 @@ function AppContent() {
 export default function Home() {
   return (
     <CorpusProvider>
-      <Suspense>
-        <AppContent />
-      </Suspense>
+      <AppContent />
     </CorpusProvider>
   );
 }

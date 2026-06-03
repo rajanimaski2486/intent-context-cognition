@@ -7938,6 +7938,10 @@
           "narrative": "Conflicting modifiers. The agent decomposes the contradiction, applies the session context, and finds the intersection.",
           "display_text": "make it feel aspirational but not out of reach",
           "bm25_keywords": "aspirational lifestyle",
+          "bm25_expansion": "luxury premium upscale wealthy elegant glamorous opulent",
+          "filters": [
+            { "type": "exclude_tags", "tags": ["luxury", "mansion", "wealth", "glamour", "yacht"], "label": "exclude luxury cluster" }
+          ],
           "embedding": [
             0.0460205078125,
             -0.0360107421875,
@@ -9581,6 +9585,10 @@
           "narrative": "The future of work is not a visual cliche. The agent must exclude the past before it can find the future.",
           "display_text": "make it feel like the future of work, not the past",
           "bm25_keywords": "future work modern technology",
+          "bm25_expansion": "futuristic automation robotics holographic cyber sci-fi",
+          "filters": [
+            { "type": "exclude_tags", "tags": ["robot", "hologram", "futuristic", "cyber", "vr"], "label": "exclude futuristic-cliche cluster" }
+          ],
           "embedding": [
             0.017913818359375,
             -0.0169677734375,

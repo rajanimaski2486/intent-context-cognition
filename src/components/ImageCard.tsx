@@ -5,15 +5,22 @@ interface Props {
   image: ImageResult;
   variant: "legacy" | "discovery";
   rank: number;
+  // Cumulative layer view: mark results that were NOT in the keyword baseline,
+  // so the audience sees exactly what the semantic layers surfaced.
+  highlight?: boolean;
 }
 
-export default function ImageCard({ image, variant, rank }: Props) {
+export default function ImageCard({ image, variant, rank, highlight = false }: Props) {
   return (
     <a
       href={image.pexels_url}
       target="_blank"
       rel="noopener noreferrer"
-      className="group relative block rounded-md overflow-hidden bg-zinc-900 border border-zinc-800 hover:border-zinc-600 transition-colors"
+      className={`group relative block rounded-md overflow-hidden bg-zinc-900 border transition-colors ${
+        highlight
+          ? "border-green-500 ring-1 ring-green-500/60 hover:border-green-400"
+          : "border-zinc-800 hover:border-zinc-600"
+      }`}
     >
       {image.thumbnail_url ? (
         // eslint-disable-next-line @next/next/no-img-element
