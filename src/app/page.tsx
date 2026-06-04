@@ -173,6 +173,15 @@ function AppContent() {
               >
                 LinkedIn →
               </a>
+              <span className="text-zinc-700">·</span>
+              <a
+                href="https://github.com/rajanimaski2486/intent-context-cognition"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[10px] text-zinc-400 hover:text-zinc-200 transition-colors"
+              >
+                GitHub
+              </a>
             </div>
           </div>
         </div>
