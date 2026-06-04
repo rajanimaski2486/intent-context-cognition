@@ -150,8 +150,18 @@ export interface LayerScenario {
   prior_thread: string[];
 }
 
+// Journeys hidden from the layer-stack card grid (data is kept for other views).
+// Curated down to the three with the clearest keyword→cognition arc (journey_b
+// future-of-work, journey_e human tech, journey_c calm nature).
+const HIDDEN_LAYER_JOURNEYS = new Set([
+  "journey_d", // "health that isn't a gym" — wellness thread
+  "journey_a", // "stillness that doesn't feel empty" — muddy arc (luxury → wandering)
+]);
+
 export function getLayerScenarios(corpus: CorpusMode = "standard"): LayerScenario[] {
-  return loadJourneys(corpus).map((j) => {
+  return loadJourneys(corpus)
+    .filter((j) => !HIDDEN_LAYER_JOURNEYS.has(j.id))
+    .map((j) => {
     const step3 = j.steps.find((s) => s.step === 3)!;
     const prior = j.steps
       .filter((s) => s.step < 3 && s.display_text)

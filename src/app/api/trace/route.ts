@@ -11,6 +11,7 @@ import { streamTrace, streamScriptedTrace } from "@/lib/llm";
 const RequestSchema = z.object({
   query_id: z.string(),
   corpus: z.enum(["standard", "extended"]).default("standard"),
+  provider: z.enum(["current", "nvidia"]).default("current"),
 });
 
 export async function POST(req: NextRequest) {
@@ -20,7 +21,7 @@ export async function POST(req: NextRequest) {
     return errorStream("Invalid request body");
   }
 
-  const { query_id, corpus } = parsed.data;
+  const { query_id, corpus, provider } = parsed.data;
 
   // Check if this is a journey step trace request
   const parsedStep = parseJourneyStepId(query_id);
@@ -28,7 +29,7 @@ export async function POST(req: NextRequest) {
     const step = getJourneyStep(parsedStep.journeyId, parsedStep.step, corpus);
     if (!step) return errorStream(`Unknown journey step: ${query_id}`);
     if (!step.trace_template) return errorStream("Journey step has no trace_template");
-    const readable = await streamTrace(query_id, corpus);
+    const readable = await streamTrace(query_id, corpus, provider);
     return new Response(readable, {
       headers: {
         "Content-Type": "text/event-stream",
@@ -47,7 +48,7 @@ export async function POST(req: NextRequest) {
     return errorStream("Query has no trace_template");
   }
 
-  const readable = await streamTrace(query_id, corpus);
+  const readable = await streamTrace(query_id, corpus, provider);
 
   return new Response(readable, {
     headers: {

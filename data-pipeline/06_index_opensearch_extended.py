@@ -94,6 +94,13 @@ def recreate_index(client: OpenSearch) -> None:
     client.indices.create(index=INDEX_NAME, body=INDEX_BODY)
 
 
+def has_text(img: dict) -> bool:
+    """An image is searchable only if it carries some text metadata. Rows with
+    empty title+description+tags embed to a degenerate vector that becomes a
+    semantic outlier (e.g. the top hit for unrelated queries), so we drop them."""
+    return any((img.get(f) or "").strip() for f in ("title", "description", "tags"))
+
+
 def generate_actions(images: list[dict]):
     for img in images:
         yield {
@@ -106,12 +113,18 @@ def generate_actions(images: list[dict]):
 def main() -> None:
     print(f"Loading images from {IMAGES_FILE}...")
     images: list[dict] = []
+    skipped = 0
     with open(IMAGES_FILE, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
-            if line:
-                images.append(json.loads(line))
-    print(f"Loaded {len(images)} images.")
+            if not line:
+                continue
+            img = json.loads(line)
+            if not has_text(img):
+                skipped += 1
+                continue
+            images.append(img)
+    print(f"Loaded {len(images)} images." + (f" Skipped {skipped} with empty metadata." if skipped else ""))
 
     if images:
         vec_len = len(images[0].get("dense_vector", []))

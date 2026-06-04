@@ -1,6 +1,17 @@
 import { createHash } from "node:crypto";
 import OpenAI from "openai";
 import { getOpenSearchClient } from "@/lib/opensearch";
+import { resolveProvider, type ModelProvider, type ProviderConfig } from "@/lib/provider";
+
+// NVIDIA NIM vision models take one image per request, so the NVIDIA reranker
+// scores this many top hybrid candidates individually (instead of one holistic
+// multi-image call) and sorts by score. Small pool keeps the cold path quick.
+export const NVIDIA_RERANK_POOL = 8;
+
+// Bump when the rerank prompt changes: it's part of the cache key, so a new
+// version transparently invalidates every previously stored verdict (which would
+// otherwise be frozen forever, even a bad sample) and forces a fresh rank.
+const RERANK_PROMPT_VERSION = "v2-compound-intent";
 
 // Separate index that caches the LLM rerank verdict per (query intent +
 // candidate set), so the multimodal model is invoked at most once per query and
@@ -20,11 +31,8 @@ export type RerankCacheStatus = "hit" | "miss" | "stored" | "fallback" | "disabl
 function rerankEnabled(): boolean {
   return (process.env.RERANK_ENABLED ?? "true") !== "false";
 }
-function rerankModel(): string {
-  return process.env.RERANK_MODEL ?? "gpt-4o";
-}
-export function rerankModelName(): string {
-  return rerankModel();
+export function rerankModelName(provider: ModelProvider): string {
+  return resolveProvider(provider).rerankModel;
 }
 export function isRerankEnabled(): boolean {
   return rerankEnabled();
@@ -74,14 +82,16 @@ export function ensureRerankIndex(): Promise<void> {
 export function computeCacheKey(
   corpus: string,
   queryText: string,
-  candidateIds: string[]
+  candidateIds: string[],
+  model: string
 ): string {
   const payload = JSON.stringify({
     corpus,
     queryText,
     candidates: candidateIds,
-    model: rerankModel(),
+    model,
     detail: rerankDetail(),
+    prompt: RERANK_PROMPT_VERSION,
   });
   return createHash("sha256").update(payload).digest("hex");
 }
@@ -104,7 +114,8 @@ export async function storeRerank(
   corpus: string,
   queryId: string,
   queryText: string,
-  rankedImageIds: string[]
+  rankedImageIds: string[],
+  model: string
 ): Promise<void> {
   const client = getOpenSearchClient();
   await client.index({
@@ -116,7 +127,7 @@ export async function storeRerank(
       query_id: queryId,
       query_text: queryText,
       ranked_image_ids: rankedImageIds,
-      model: rerankModel(),
+      model,
       created_at: new Date().toISOString(),
     },
     refresh: true,
@@ -147,22 +158,32 @@ function parseRanking(content: string, n: number): number[] | null {
   }
 }
 
-// Asks a vision model to rank the candidate images best-to-worst against the
-// query intent. Returns the candidate image_ids in ranked order, or null on any
-// failure (caller falls back to the hybrid order — never throws on stage).
+// Ranks candidate images against the query intent for the active provider.
+// Returns the candidate image_ids in ranked order, or null on any failure
+// (caller falls back to the hybrid order — never throws on stage).
 export async function rerankWithVision(
   queryText: string,
   candidates: RerankCandidate[],
+  provider: ModelProvider,
   timeoutMs = parseInt(process.env.RERANK_TIMEOUT_MS ?? "30000", 10)
 ): Promise<string[] | null> {
   if (!rerankEnabled() || candidates.length === 0) return null;
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) return null;
+  const cfg = resolveProvider(provider);
+  if (!cfg.apiKey) return null;
 
-  const client = new OpenAI({
-    baseURL: process.env.LLM_FALLBACK_BASE_URL ?? "https://api.openai.com/v1",
-    apiKey,
-  });
+  return provider === "nvidia"
+    ? rerankNvidiaPerImage(queryText, candidates, cfg, timeoutMs)
+    : rerankOpenAIHolistic(queryText, candidates, cfg, timeoutMs);
+}
+
+// OpenAI path: one multimodal call ranks the whole candidate set at once.
+async function rerankOpenAIHolistic(
+  queryText: string,
+  candidates: RerankCandidate[],
+  cfg: ProviderConfig,
+  timeoutMs: number
+): Promise<string[] | null> {
+  const client = new OpenAI({ baseURL: cfg.baseURL, apiKey: cfg.apiKey });
 
   const detail = rerankDetail();
   const imageParts = candidates.flatMap((c, i) => [
@@ -175,13 +196,13 @@ export async function rerankWithVision(
   try {
     const resp = await client.chat.completions.create(
       {
-        model: rerankModel(),
+        model: cfg.rerankModel,
         response_format: { type: "json_object" },
         messages: [
           {
             role: "system",
             content:
-              "You are a visual relevance judge for an image search engine. You are given a search intent and a numbered set of candidate images. Rank ALL candidates from best to worst match for the intent, judging the actual visual content. Respond with strict JSON: {\"ranking\": [<image numbers, best first>]}. Include every image number exactly once.",
+              "You are a visual relevance judge for an image search engine. You are given a search intent and a numbered set of candidate images. Rank ALL candidates from best to worst match for the intent, judging the actual visual content. The intent often has TWO parts — a concrete subject AND a mood or quality (e.g. \"technology that feels human\" = technology + warmth). An image must satisfy BOTH to rank highly: one that captures the mood but is missing the subject (e.g. a cozy scene with no technology) must rank BELOW one that shows both. Respond with strict JSON: {\"ranking\": [<image numbers, best first>]}. Include every image number exactly once.",
           },
           {
             role: "user",
@@ -203,4 +224,76 @@ export async function rerankWithVision(
   } finally {
     clearTimeout(timer);
   }
+}
+
+// NVIDIA path: NIM vision models accept only one image per request, so score
+// each candidate independently (in parallel), then sort by score. Returns null
+// only if every image failed, so a few transient errors still produce an order.
+async function rerankNvidiaPerImage(
+  queryText: string,
+  candidates: RerankCandidate[],
+  cfg: ProviderConfig,
+  timeoutMs: number
+): Promise<string[] | null> {
+  const client = new OpenAI({ baseURL: cfg.baseURL, apiKey: cfg.apiKey });
+
+  const scored = await Promise.all(
+    candidates.map(async (c) => ({
+      id: c.image_id,
+      score: await scoreOneImage(client, cfg.rerankModel, queryText, c, timeoutMs),
+    }))
+  );
+
+  if (scored.every((s) => s.score === null)) return null;
+  // Stable sort: higher score first; failed scores (null) sink to the bottom.
+  scored.sort((a, b) => (b.score ?? -1) - (a.score ?? -1));
+  return scored.map((s) => s.id);
+}
+
+async function scoreOneImage(
+  client: OpenAI,
+  model: string,
+  queryText: string,
+  candidate: RerankCandidate,
+  timeoutMs: number
+): Promise<number | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await client.chat.completions.create(
+      {
+        model,
+        max_tokens: 16,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a visual relevance judge for an image search engine. Given a search intent and ONE image, rate how well the image's actual visual content matches the intent, from 0 (irrelevant) to 100 (perfect). The intent often has TWO parts — a concrete subject AND a mood or quality (e.g. \"technology that feels human\" = technology + warmth). Score high only if BOTH are present; if the image matches the mood but is missing the subject (or vice versa), score it low. Reply with ONLY the number.",
+          },
+          {
+            role: "user",
+            content: [
+              { type: "text", text: `Search intent: "${queryText}". Rate this image 0-100.` },
+              { type: "image_url", image_url: { url: candidate.thumbnail_url || candidate.medium_url } },
+            ],
+          },
+        ],
+      },
+      { signal: controller.signal }
+    );
+    return parseScore(resp.choices[0]?.message?.content ?? "");
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Pulls the first 0-100 number out of the model's reply.
+function parseScore(content: string): number | null {
+  const m = content.match(/\d{1,3}(?:\.\d+)?/);
+  if (!m) return null;
+  const n = parseFloat(m[0]);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(0, Math.min(100, n));
 }

@@ -44,3 +44,6 @@ data-pipeline/*.jsonl
 *.tsbuildinfo
 next-env.d.ts
 .env*.local
+
+# claude code local config & worktrees
+.claude/

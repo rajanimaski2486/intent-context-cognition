@@ -4,6 +4,8 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import type { LayerScenario, CorpusMode } from "@/lib/queries";
 import type { ImageResult } from "@/app/api/search/route";
 import ImageCard from "./ImageCard";
+import AgentTrace from "./AgentTrace";
+import { useModelProvider } from "./ProviderToggle";
 
 interface Props {
   scenarios: LayerScenario[];
@@ -13,30 +15,10 @@ interface Props {
 // The four cumulative layers. Index 0 is the keyword baseline; each subsequent
 // layer adds one pillar on top of the same shared query.
 const LAYER_DEFS = [
-  {
-    key: "expansion",
-    tab: "Keyword + expansion",
-    short: "Keyword",
-    took: "Classic keyword search, widened with synonym expansion. No understanding of meaning — and the expansion drags in the wrong cluster.",
-  },
-  {
-    key: "intent",
-    tab: "+ Intent",
-    short: "Intent",
-    took: "Adds the meaning of the query as a vector. Results move from literal keywords to the idea the words point at.",
-  },
-  {
-    key: "context",
-    tab: "+ Context",
-    short: "Context",
-    took: "Conditions the search on the whole conversation so far. The register established in the earlier turns is carried in — not re-stated.",
-  },
-  {
-    key: "cognition",
-    tab: "+ Cognition",
-    short: "Cognition",
-    took: "The agent resolves the contradiction in the brief and filters out the cluster keyword expansion dragged in.",
-  },
+  { key: "expansion", tab: "Keyword + expansion", short: "Keyword", desc: "lexical BM25, no meaning" },
+  { key: "intent", tab: "+ Intent", short: "Intent", desc: "meaning as a vector" },
+  { key: "context", tab: "+ Context", short: "Context", desc: "carries the conversation" },
+  { key: "cognition", tab: "+ Cognition", short: "Cognition", desc: "agent filters + reranks" },
 ] as const;
 
 // One-line description of what each layer does to the query relative to baseline.
@@ -74,6 +56,32 @@ function layersForLevel(level: number) {
     context: level >= 2,
     cognition: level >= 3,
   };
+}
+
+// Short, query-aware reasoning shown per pillar — it accumulates as the user
+// stacks Intent → Context → Cognition, so the agent "thinks out loud" step by
+// step instead of dumping everything at the end.
+function intentReason(current: string): string {
+  return `read the request as meaning, not keywords — embed “${current}” so it matches on concept, not vocabulary.`;
+}
+function contextReason(priors: string[]): string {
+  const quoted = priors.map((p) => `“${p}”`).join(" + ");
+  return priors.length
+    ? `fold in the session — blend the earlier turns (${quoted}) so results honour the whole thread, not just the last line.`
+    : `fold in the session so results honour the whole thread, not just the last line.`;
+}
+function cognitionReason(filters: string[]): string {
+  const f = filters.length ? filters.join(", ") : "filter the candidate pool";
+  return `${f}; then a vision model reranks the survivors against the intent.`;
+}
+
+function ReasonStep({ label, text }: { label: string; text: string }) {
+  return (
+    <div className="flex gap-2.5">
+      <span className="text-zinc-400 shrink-0 w-16">{label}</span>
+      <p className="text-green-300 flex-1">{text}</p>
+    </div>
+  );
 }
 
 function TraceRow({ label, value }: { label: string; value: string }) {
@@ -123,6 +131,7 @@ function LayerStepper({
                 }`}
               />
               <span className="text-[10px] sm:text-xs font-medium leading-tight">{def.tab}</span>
+              <span className="text-[9px] text-zinc-500 leading-tight hidden sm:block">{def.desc}</span>
             </button>
             {i < LAYER_DEFS.length - 1 && (
               <div className={`w-3 sm:w-6 h-px shrink-0 ${i < active ? "bg-green-700" : "bg-zinc-800"}`} />
@@ -135,6 +144,7 @@ function LayerStepper({
 }
 
 export default function LayerStack({ scenarios, corpus }: Props) {
+  const { provider } = useModelProvider();
   const [scenarioId, setScenarioId] = useState(scenarios[0]?.journeyId ?? "");
   const [level, setLevel] = useState(0);
   const [byLevel, setByLevel] = useState<Record<number, LayerData>>({});
@@ -147,7 +157,7 @@ export default function LayerStack({ scenarios, corpus }: Props) {
 
   const fetchLevel = useCallback(
     async (sc: LayerScenario, lvl: number) => {
-      const key = `${sc.journeyId}_${lvl}_${corpus}`;
+      const key = `${sc.journeyId}_${lvl}_${corpus}_${provider}`;
       if (fetched.current[key]) return;
       fetched.current[key] = true;
       setLoading(true);
@@ -159,6 +169,7 @@ export default function LayerStack({ scenarios, corpus }: Props) {
             query_id: sc.query_id,
             corpus,
             layers: layersForLevel(lvl),
+            provider,
           }),
         });
         if (resp.ok) {
@@ -170,10 +181,25 @@ export default function LayerStack({ scenarios, corpus }: Props) {
         setLoading(false);
       }
     },
-    [corpus]
+    [corpus, provider]
   );
 
-  // Fetch whenever the active level (or scenario/corpus) changes.
+  // Switching providers invalidates every cached layer result. Reset the walk to
+  // the keyword baseline (same as picking a new scenario) so the layers rebuild
+  // cleanly under the new model instead of showing stale results.
+  const didMountProvider = useRef(false);
+  useEffect(() => {
+    if (!didMountProvider.current) {
+      didMountProvider.current = true;
+      return;
+    }
+    setLevel(0);
+    setByLevel({});
+    setReached(0);
+    fetched.current = {};
+  }, [provider]);
+
+  // Fetch whenever the active level (or scenario/corpus/provider) changes.
   useEffect(() => {
     if (scenario) fetchLevel(scenario, level);
   }, [scenario, level, fetchLevel]);
@@ -188,81 +214,154 @@ export default function LayerStack({ scenarios, corpus }: Props) {
     fetched.current = {};
   };
 
-  const def = LAYER_DEFS[level];
   const current = byLevel[level];
+  // The prior two queries only feed the search once the Context pillar is on;
+  // Keyword + expansion and + Intent search the current line alone.
+  const contextActive = level >= 2;
   const results = current?.results ?? [];
   const baselineIds = new Set((byLevel[0]?.results ?? []).map((r) => r.image_id));
   const newCount = level > 0 ? results.filter((r) => !baselineIds.has(r.image_id)).length : 0;
-  const filterLabel = current?.trace?.filters_applied?.[0] ?? null;
 
   return (
     <div className="flex flex-col gap-5">
-      {/* Scenario selector */}
-      <div className="flex gap-2 flex-wrap">
-        {scenarios.map((s) => (
-          <button
-            key={s.journeyId}
-            onClick={() => selectScenario(s.journeyId)}
-            className={`px-4 py-1.5 rounded-full text-sm font-medium border transition-colors ${
-              s.journeyId === scenarioId
-                ? "border-green-700 bg-green-900/30 text-green-300"
-                : "border-zinc-700 bg-zinc-900 text-zinc-400 hover:border-zinc-500 hover:text-zinc-200"
-            }`}
-          >
-            {s.label}
-            <span className="ml-2 text-[10px] text-zinc-500">{s.subtitle}</span>
-          </button>
-        ))}
+      {/* Intro — frame what these are */}
+      <div className="flex flex-col gap-2">
+        <h2 className="text-lg font-bold text-zinc-50 leading-tight">
+          Generative Discovery on OpenSearch
+          <span className="block text-sm font-medium text-zinc-300 mt-0.5">
+            Queries requiring understanding, not just keywords
+          </span>
+        </h2>
+        <p className="text-xs text-zinc-300 leading-relaxed max-w-3xl border-l-2 border-green-700/70 bg-green-950/15 rounded-r pl-3 pr-2 py-1.5">
+          Each card is a short <span className="text-zinc-100 font-medium">conversation</span> built from
+          queries that describe a feeling, not a keyword. Pick one, then stack{" "}
+          <span className="text-zinc-100 font-medium">Intent → Context → Cognition</span> and watch keyword
+          search fall behind while Generative Discovery follows the meaning.
+        </p>
       </div>
 
-      {/* Shared query — the one thread all layers act on */}
-      <div className="border-l-2 border-green-800 pl-3 flex flex-col gap-1.5">
-        {scenario.prior_thread.length > 0 && (
-          <div className="text-[11px] text-zinc-600 flex flex-wrap items-center gap-1.5">
-            <span className="uppercase tracking-widest text-[10px]">Conversation so far</span>
-            {scenario.prior_thread.map((t, i) => (
-              <span key={i} className="italic">
-                &ldquo;{t}&rdquo; →
+      {/* Query selector — lead with the query, not a persona */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+        {scenarios.map((s) => {
+          const opener = s.prior_thread[0] ?? s.display_text;
+          const isActive = s.journeyId === scenarioId;
+          return (
+            <button
+              key={s.journeyId}
+              onClick={() => selectScenario(s.journeyId)}
+              className={`text-left rounded-lg border px-3 py-2.5 flex flex-col gap-1.5 transition-colors ${
+                isActive
+                  ? "border-green-600 bg-green-900/20"
+                  : "border-zinc-700 bg-zinc-900 hover:border-zinc-500 hover:bg-zinc-800"
+              }`}
+            >
+              <span
+                className={`text-sm font-medium italic leading-snug ${
+                  isActive ? "text-green-200" : "text-zinc-200"
+                }`}
+              >
+                &ldquo;{opener}&rdquo;
               </span>
+              <span className="text-[10px] text-zinc-500 uppercase tracking-wide">
+                {s.subtitle} · 3-query thread
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* The conversation — the CURRENT request, plus the session history that led
+          here. Framed as request-vs-history (not a numbered 1→2→3 queue) so it's
+          clear line 3 is the query being searched, not the third step in a run. */}
+      <div className="border-l-2 border-green-800 pl-3 flex flex-col gap-3">
+        {scenario.prior_thread.length > 0 && (
+          <div className="flex flex-col gap-1.5">
+            <span className="text-[10px] uppercase tracking-widest text-zinc-600">
+              Earlier in this session
+            </span>
+            {scenario.prior_thread.map((q, i) => (
+              <div key={i} className="flex items-start gap-2">
+                <span
+                  className={`text-sm italic leading-snug ${
+                    contextActive ? "text-zinc-300" : "text-zinc-600"
+                  }`}
+                >
+                  &ldquo;{q}&rdquo;
+                </span>
+                {contextActive && (
+                  <span className="text-[9px] uppercase tracking-widest text-green-700 border border-green-900 rounded px-1.5 py-0.5 mt-0.5 whitespace-nowrap shrink-0">
+                    Carried
+                  </span>
+                )}
+              </div>
             ))}
           </div>
         )}
-        <div className="text-base text-zinc-100 italic font-light">
-          &ldquo;{scenario.display_text}&rdquo;
+        <div className="flex flex-col gap-1.5">
+          <span className="text-[10px] uppercase tracking-widest text-green-500">Now searching</span>
+          <span className="text-sm italic leading-snug text-zinc-100 font-medium">
+            &ldquo;{scenario.display_text}&rdquo;
+          </span>
         </div>
-        <div className="text-[11px] text-zinc-500">
-          One query. Add the pillars one at a time and watch the same result set rebuild.
-        </div>
+        <p className="text-[11px] text-zinc-500">
+          {contextActive
+            ? "This request, conditioned by the turns before it — the session vector carries the thread."
+            : "Keyword and Intent search this request alone. Add Context to fold in the earlier turns."}
+        </p>
       </div>
 
       {/* Layer stack control */}
       <LayerStepper active={level} reached={reached} loading={loading} onSelect={setLevel} />
 
-      {/* What this layer did */}
-      <div className="flex flex-col gap-2 rounded-lg border border-zinc-800 bg-zinc-950/60 px-4 py-3">
-        <div className="flex items-center justify-between gap-3 flex-wrap">
-          <span className="text-sm font-medium text-zinc-200">{def.tab}</span>
+      {/* Agent reasoning — reveals one step per pillar as the user stacks them,
+          instead of dumping the whole trace only at Cognition. */}
+      {level >= 1 && (
+        <div className="rounded-lg border border-zinc-800 bg-zinc-950">
+          <div className="px-4 py-2 border-b border-zinc-800 flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-green-500" />
+            <span className="text-[10px] text-zinc-500 uppercase tracking-widest">Agent reasoning</span>
+            <span className="ml-auto text-[10px] text-zinc-600 italic">
+              builds up as you add each pillar
+            </span>
+          </div>
+          <div className="px-4 py-3 flex flex-col gap-2.5 font-mono text-[11px] leading-relaxed">
+            <ReasonStep label="Intent" text={intentReason(scenario.display_text)} />
+            {level >= 2 && <ReasonStep label="Context" text={contextReason(scenario.prior_thread)} />}
+            {level >= 3 && (
+              <div className="flex flex-col gap-2">
+                <ReasonStep label="Cognition" text={cognitionReason(current?.trace?.filters_applied ?? [])} />
+                <div className="pl-[4.625rem]">
+                  <AgentTrace
+                    key={`${scenarioId}_cog`}
+                    queryId={scenario.query_id}
+                    active
+                    provider={provider}
+                    corpus={corpus}
+                    bare
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Query execution trace — directly under the layer tabs */}
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center justify-between gap-3">
+          <button
+            onClick={() => setShowTrace((v) => !v)}
+            className="text-xs text-zinc-400 hover:text-zinc-200 flex items-center gap-1.5 transition-colors"
+          >
+            <span className={`transition-transform ${showTrace ? "rotate-90" : ""}`}>▸</span>
+            {showTrace ? "Hide query trace" : "Show query trace"}
+          </button>
           {level > 0 && (
             <span className="text-[11px] text-green-400 font-mono">
               {newCount} of {results.length || 6} beyond keyword reach
             </span>
           )}
         </div>
-        <p className="text-xs text-zinc-400 leading-relaxed">{def.took}</p>
-        {level === 3 && filterLabel && (
-          <p className="text-[11px] text-orange-400 font-mono">filter executed · {filterLabel}</p>
-        )}
-      </div>
-
-      {/* Query trace toggle — expansion/modification + the OpenSearch payload */}
-      <div className="flex flex-col gap-2">
-        <button
-          onClick={() => setShowTrace((v) => !v)}
-          className="self-start text-xs text-zinc-400 hover:text-zinc-200 flex items-center gap-1.5 transition-colors"
-        >
-          <span className={`transition-transform ${showTrace ? "rotate-90" : ""}`}>▸</span>
-          {showTrace ? "Hide query trace" : "Show query trace"}
-        </button>
 
         {showTrace && current?.trace && (
           <div className="rounded-lg border border-zinc-800 bg-zinc-950 flex flex-col">

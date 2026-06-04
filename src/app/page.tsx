@@ -3,6 +3,7 @@
 import { useState } from "react";
 import type { ImageResult, SearchTrace } from "@/app/api/search/route";
 import { CorpusProvider, CorpusToggle, useCorpus } from "@/components/CorpusToggle";
+import { ModelProviderProvider, ProviderToggle, useModelProvider } from "@/components/ProviderToggle";
 import DualResults from "@/components/DualResults";
 import LayerStack from "@/components/LayerStack";
 import { getLayerScenarios } from "@/lib/queries";
@@ -75,7 +76,8 @@ function QueryTrace({ trace, embedding }: { trace: SearchTrace; embedding: Embed
 
 function AppContent() {
   const { corpus } = useCorpus();
-  const [view, setView] = useState<View>("search");
+  const { provider } = useModelProvider();
+  const [view, setView] = useState<View>("reveal");
   const [input, setInput] = useState("");
   const [submitted, setSubmitted] = useState<string | null>(null);
   const [legacy, setLegacy] = useState<ImageResult[]>([]);
@@ -102,7 +104,7 @@ function AppContent() {
       const resp = await fetch("/api/search", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query_text: q, corpus }),
+        body: JSON.stringify({ query_text: q, corpus, provider }),
       });
       const data = await resp.json();
 
@@ -146,6 +148,7 @@ function AppContent() {
           </span>
         </div>
         <div className="flex items-center gap-4 sm:gap-6">
+          <ProviderToggle />
           <CorpusToggle />
           <div className="flex flex-col items-end gap-0.5 border-l border-zinc-800 pl-4 sm:pl-6 leading-snug">
             <span className="text-xs text-zinc-200 font-medium">Rajani Maski</span>
@@ -309,7 +312,9 @@ function AppContent() {
 export default function Home() {
   return (
     <CorpusProvider>
-      <AppContent />
+      <ModelProviderProvider>
+        <AppContent />
+      </ModelProviderProvider>
     </CorpusProvider>
   );
 }

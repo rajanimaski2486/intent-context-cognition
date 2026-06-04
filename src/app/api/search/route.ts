@@ -19,10 +19,12 @@ import {
   rerankWithVision,
   rerankModelName,
   isRerankEnabled,
+  NVIDIA_RERANK_POOL,
   type RerankCacheStatus,
 } from "@/lib/rerank";
 import { embedQuery, EMBEDDING_MODEL } from "@/lib/embed";
 import { validateQueryText } from "@/lib/guardrails";
+import type { ModelProvider } from "@/lib/provider";
 
 // Candidate pool the LLM reranker judges before we return the top 6.
 const RERANK_POOL_SIZE = 50;
@@ -45,6 +47,7 @@ const RequestSchema = z.object({
   session_vector: z.array(z.number()).optional(),
   journey_session: z.boolean().optional(),
   layers: LayersSchema.optional(),
+  provider: z.enum(["current", "nvidia"]).default("current"),
 });
 
 export type Layers = z.infer<typeof LayersSchema>;
@@ -262,23 +265,28 @@ async function applyRerank(
   corpus: string,
   queryId: string,
   queryText: string,
-  candidates: ImageResult[]
+  candidates: ImageResult[],
+  provider: ModelProvider
 ): Promise<{ results: ImageResult[]; rerank: SearchTrace["rerank"] }> {
-  const considered = candidates.length;
+  const model = rerankModelName(provider);
+  // NVIDIA scores one image per request, so judge only the top hybrid hits;
+  // OpenAI ranks the whole pool holistically in a single call.
+  const pool = provider === "nvidia" ? candidates.slice(0, NVIDIA_RERANK_POOL) : candidates;
+  const considered = pool.length;
   const base: SearchTrace["rerank"] = {
     applied: false,
-    model: rerankModelName(),
+    model,
     cache: "disabled",
     candidates_considered: considered,
     returned: Math.min(considered, RESULT_SIZE),
   };
 
   if (!isRerankEnabled() || considered === 0) {
-    return { results: candidates.slice(0, RESULT_SIZE), rerank: base };
+    return { results: pool.slice(0, RESULT_SIZE), rerank: base };
   }
 
-  const candidateIds = candidates.map((c) => c.image_id);
-  const cacheKey = computeCacheKey(corpus, queryText, candidateIds);
+  const candidateIds = pool.map((c) => c.image_id);
+  const cacheKey = computeCacheKey(corpus, queryText, candidateIds, model);
 
   let status: RerankCacheStatus = "miss";
   let rankedIds: string[] | null = null;
@@ -290,16 +298,17 @@ async function applyRerank(
     } else {
       rankedIds = await rerankWithVision(
         queryText,
-        candidates.map((c) => ({
+        pool.map((c) => ({
           image_id: c.image_id,
           title: c.title,
           description: c.description,
           thumbnail_url: c.thumbnail_url,
           medium_url: c.medium_url,
-        }))
+        })),
+        provider
       );
       if (rankedIds) {
-        await storeRerank(cacheKey, corpus, queryId, queryText, rankedIds);
+        await storeRerank(cacheKey, corpus, queryId, queryText, rankedIds, model);
         status = "stored";
       } else {
         status = "fallback";
@@ -311,12 +320,12 @@ async function applyRerank(
     rankedIds = null;
   }
 
-  const ordered = rankedIds ? reorderByIds(candidates, rankedIds) : candidates;
+  const ordered = rankedIds ? reorderByIds(pool, rankedIds) : pool;
   return {
     results: ordered.slice(0, RESULT_SIZE),
     rerank: {
       applied: status === "hit" || status === "stored",
-      model: rerankModelName(),
+      model,
       cache: status,
       candidates_considered: considered,
       returned: Math.min(considered, RESULT_SIZE),
@@ -331,12 +340,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
   }
 
-  const { query_id, query_text, corpus, session_vector, journey_session, layers } = parsed.data;
+  const { query_id, query_text, corpus, session_vector, journey_session, layers, provider } = parsed.data;
   const index = CORPUS_CONFIG[corpus].index;
 
   // Free-form typed query path.
   if (query_text !== undefined) {
-    return await handleFreeformSearch({ query_text, corpus, index });
+    return await handleFreeformSearch({ query_text, corpus, index, provider });
   }
 
   if (!query_id) {
@@ -345,9 +354,9 @@ export async function POST(req: NextRequest) {
 
   try {
     if (layers) {
-      return await handleLayeredSearch({ query_id, corpus, layers, index });
+      return await handleLayeredSearch({ query_id, corpus, layers, index, provider });
     }
-    return await handleSearch({ query_id, corpus, session_vector, journey_session, index });
+    return await handleSearch({ query_id, corpus, session_vector, journey_session, index, provider });
   } catch (err) {
     const { code, status, detail } = classifyOpenSearchError(err);
     console.error("search_failed", { code, index, message: (err as Error)?.message });
@@ -362,10 +371,12 @@ async function handleFreeformSearch({
   query_text,
   corpus,
   index,
+  provider,
 }: {
   query_text: string;
   corpus: CorpusMode;
   index: string;
+  provider: ModelProvider;
 }): Promise<NextResponse> {
   const text = query_text.trim();
   const guard = validateQueryText(text);
@@ -393,7 +404,7 @@ async function handleFreeformSearch({
       hybridSearch(index, vector, text),
     ]);
 
-    const reranked = await applyRerank(corpus, `freeform:${text}`, text, discoveryResult.results);
+    const reranked = await applyRerank(corpus, `freeform:${text}`, text, discoveryResult.results, provider);
 
     const trace: SearchTrace = {
       embedding_source: "query_embedding",
@@ -440,11 +451,13 @@ async function handleLayeredSearch({
   corpus,
   layers,
   index,
+  provider,
 }: {
   query_id: string;
   corpus: CorpusMode;
   layers: Layers;
   index: string;
+  provider: ModelProvider;
 }): Promise<NextResponse> {
   const parsedStep = parseJourneyStepId(query_id);
   if (!parsedStep || parsedStep.step !== 3) {
@@ -497,7 +510,7 @@ async function handleLayeredSearch({
   let rerankTrace: SearchTrace["rerank"] | null = null;
   if (layers.cognition) {
     const queryText = step.display_text ?? baseKeywords;
-    const reranked = await applyRerank(corpus, query_id, queryText, hybrid.results);
+    const reranked = await applyRerank(corpus, query_id, queryText, hybrid.results, provider);
     results = reranked.results;
     rerankTrace = reranked.rerank;
   } else {
@@ -529,12 +542,14 @@ async function handleSearch({
   session_vector,
   journey_session,
   index,
+  provider,
 }: {
   query_id: string;
   corpus: CorpusMode;
   session_vector?: number[];
   journey_session?: boolean;
   index: string;
+  provider: ModelProvider;
 }): Promise<NextResponse> {
   // Journey step path
   if (journey_session) {
@@ -558,7 +573,7 @@ async function handleSearch({
     ]);
 
     const queryText = step.display_text ?? bm25Keywords;
-    const reranked = await applyRerank(corpus, query_id, queryText, discoveryResult.results);
+    const reranked = await applyRerank(corpus, query_id, queryText, discoveryResult.results, provider);
 
     const trace: SearchTrace = {
       embedding_source: "session_vector",
@@ -589,7 +604,7 @@ async function handleSearch({
       : Promise.resolve({ results: [] as ImageResult[], query: {}, filterLabels: [] as string[] }),
   ]);
 
-  const reranked = await applyRerank(corpus, query_id, query.display_text, discoveryResult.results);
+  const reranked = await applyRerank(corpus, query_id, query.display_text, discoveryResult.results, provider);
 
   const trace: SearchTrace = {
     embedding_source: session_vector ? "session_vector" : "query_embedding",
