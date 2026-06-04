@@ -10,14 +10,14 @@
 
 ### Try it live
 
-**[intent-context-cognition.vercel.app](https://intent-context-cognition.vercel.app)**
+**[intent-context-cognition-brown.vercel.app](https://intent-context-cognition-brown.vercel.app/)**
 
 Open on your phone or scan the QR code →
 
 </td>
 <td>
 
-<img src="https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=https://intent-context-cognition.vercel.app" alt="QR code — intent-context-cognition.vercel.app" width="150" height="150" />
+<img src="https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=https://intent-context-cognition-brown.vercel.app/" alt="QR code — intent-context-cognition-brown.vercel.app" width="150" height="150" />
 
 </td>
 </tr>
@@ -66,18 +66,9 @@ The answer is visible without a single slide or spoken word. The Layers view mak
 | Fallback LLM (trace) | OpenAI `gpt-4o-mini` |
 | Last-resort trace | Scripted — streamed character by character, no LLM dependency |
 
----
+### Architecture
 
-## Tab Structure
-
-```
-Standard mode:  [ Reveal ▸ 3 pillars ]  [ Journey ]  |  Intent  Context  Cognition
-Extended mode:  [ Reveal ▸ 3 pillars ]  [ Journey ]  |  Intent  Context  Cognition  Precision P@6
-```
-
-**Reveal** and **Journey** are the primary views — the ones used on stage. The deep-dive tabs (Intent, Context, Cognition, Precision) are for explaining individual mechanisms.
-
-The **Precision** tab is Extended mode only. It adds 5 queries where `precision@6` is measured explicitly — legacy vs. Discovery — and the gap at scale is the closing argument.
+![Architecture diagram](docs/architecture.png)
 
 ---
 
@@ -315,7 +306,7 @@ NEXT_PUBLIC_APP_NAME=Reveal
 - [ ] Journey step 3 traces stream in scripted mode (both journeys)
 - [ ] Precision@6 scores manually validated and updated in `queries_extended.json`
 - [ ] `TRACE_MODE=scripted` set in Vercel env vars
-- [ ] QR code generated for `intent-context-cognition.vercel.app`
+- [ ] QR code generated for `intent-context-cognition-brown.vercel.app`
 - [ ] `?speaker=true` tested on presenter device
 - [ ] App tested on iPhone (stacked layout, touch navigation)
 - [ ] Corpus toggle tested both directions
