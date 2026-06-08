@@ -1,0 +1,53 @@
+{
+  "status": "ready",
+  "corpus": "standard",
+  "k": 10,
+  "judge": "LLM-as-judge: gpt-4o",
+  "queries": 13,
+  "pairs": 264,
+  "generated_at": "2026-06-08T13:26:04.712472+00:00",
+  "layers": [
+    {
+      "key": "keyword",
+      "label": "Keyword (BM25)",
+      "ndcg": 0.5649,
+      "p5": 0.4923,
+      "p1": 0.6923,
+      "recall": 0.3835,
+      "mrr": 0.7489,
+      "map": 0.4048,
+      "judge": 0.5,
+      "cos": 0.2648,
+      "hit": 0.9231,
+      "diversity": 0.6139
+    },
+    {
+      "key": "intent",
+      "label": "+ Intent (kNN)",
+      "ndcg": 0.6685,
+      "p5": 0.6615,
+      "p1": 0.6923,
+      "recall": 0.6078,
+      "mrr": 0.8034,
+      "map": 0.5829,
+      "judge": 0.5974,
+      "cos": 0.3776,
+      "hit": 1.0,
+      "diversity": 0.5475
+    },
+    {
+      "key": "hybrid",
+      "label": "+ Hybrid (fused)",
+      "ndcg": 0.7003,
+      "p5": 0.6615,
+      "p1": 0.7692,
+      "recall": 0.6482,
+      "mrr": 0.841,
+      "map": 0.6308,
+      "judge": 0.6103,
+      "cos": 0.3754,
+      "hit": 1.0,
+      "diversity": 0.5621
+    }
+  ]
+}

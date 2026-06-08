@@ -6,9 +6,10 @@ import { CorpusProvider, CorpusToggle, useCorpus } from "@/components/CorpusTogg
 import { ModelProviderProvider, ProviderToggle, useModelProvider } from "@/components/ProviderToggle";
 import DualResults from "@/components/DualResults";
 import LayerStack from "@/components/LayerStack";
+import EvalPanel from "@/components/EvalPanel";
 import { getLayerScenarios } from "@/lib/queries";
 
-type View = "search" | "reveal";
+type View = "search" | "reveal" | "eval";
 
 // Suggested queries — evocative phrases where meaning beats keyword match. These
 // are conveniences only; they run through the same free-form path as typed input.
@@ -213,11 +214,26 @@ function AppContent() {
               3 pillars
             </span>
           </button>
+          <button
+            onClick={() => setView("eval")}
+            className={`px-4 py-1.5 rounded-full text-sm font-medium border transition-colors ${
+              view === "eval"
+                ? "border-green-700 bg-green-900/30 text-green-300"
+                : "border-zinc-700 bg-zinc-900 text-zinc-300 hover:border-zinc-500 hover:text-zinc-200"
+            }`}
+          >
+            Eval
+            <span className="ml-1.5 text-[9px] border border-zinc-700 rounded px-1 py-px text-zinc-400">
+              nDCG
+            </span>
+          </button>
         </div>
 
         {view === "reveal" && (
           <LayerStack scenarios={getLayerScenarios(corpus)} corpus={corpus} />
         )}
+
+        {view === "eval" && <EvalPanel />}
 
         {view === "search" && (
           <>

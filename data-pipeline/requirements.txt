@@ -3,3 +3,4 @@ openai
 opensearch-py
 python-dotenv
 tqdm
+numpy
