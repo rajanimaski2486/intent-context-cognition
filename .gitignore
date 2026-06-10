@@ -36,6 +36,11 @@ yarn-error.log*
 
 # data pipeline artifacts
 data-pipeline/*.jsonl
+__pycache__/
+*.log
+
+# local work
+/_deck_work/
 
 # vercel
 .vercel
