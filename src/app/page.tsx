@@ -302,13 +302,12 @@ function AppContent() {
                 &ldquo;{submitted}&rdquo;
               </div>
             )}
-            <DualResults legacy={legacy} discovery={discovery} loading={loading} />
 
             {trace && !loading && (
               <div className="flex flex-col gap-2">
                 <button
                   onClick={() => setShowTrace((v) => !v)}
-                  className="self-start text-xs text-zinc-400 hover:text-zinc-200 flex items-center gap-1.5 transition-colors"
+                  className="self-start rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-sm font-medium text-zinc-200 hover:border-zinc-500 hover:bg-zinc-800 flex items-center gap-2 transition-colors"
                 >
                   <span className={`transition-transform ${showTrace ? "rotate-90" : ""}`}>▸</span>
                   {showTrace ? "Hide query trace" : "Show query trace"}
@@ -316,6 +315,8 @@ function AppContent() {
                 {showTrace && <QueryTrace trace={trace} embedding={embedding} />}
               </div>
             )}
+
+            <DualResults legacy={legacy} discovery={discovery} loading={loading} />
           </>
         )}
 
