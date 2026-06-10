@@ -141,18 +141,25 @@ function AppContent() {
 
   return (
     <div className="min-h-screen flex flex-col bg-[#0a0a0a]">
-      <header className="border-b border-zinc-800 px-4 py-4 flex items-center justify-between gap-4">
+      <header className="border-b border-zinc-800 px-4 py-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
         <div className="flex items-center gap-3">
           <span className="text-xl font-bold tracking-tight text-white">REVEAL</span>
           <span className="text-xs text-zinc-500 uppercase tracking-widest hidden sm:inline">
             Search finds. Reveal discovers.
           </span>
         </div>
-        <div className="flex items-center gap-4 sm:gap-6">
+        <div className="flex flex-wrap items-center justify-end gap-x-4 gap-y-3 sm:gap-x-6">
           <ProviderToggle />
           <CorpusToggle />
           <div className="flex flex-col items-end gap-0.5 border-l border-zinc-800 pl-4 sm:pl-6 leading-snug">
-            <span className="text-xs text-zinc-200 font-medium">Rajani Maski</span>
+            <a
+              href="https://www.linkedin.com/in/rajanimaski/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs text-zinc-200 font-medium hover:text-blue-300 transition-colors"
+            >
+              Rajani Maski
+            </a>
             <span className="text-[10px] text-zinc-500 hidden sm:block">
               Passionate Staff Software Engineer, AI
             </span>
@@ -163,16 +170,7 @@ function AppContent() {
                 rel="noopener noreferrer"
                 className="text-[10px] text-amber-400 hover:text-amber-300 transition-colors"
               >
-                OpenSearch Con India 2026 ↗
-              </a>
-              <span className="text-zinc-700">·</span>
-              <a
-                href="https://www.linkedin.com/in/rajanimaski/"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-[10px] text-blue-400 hover:text-blue-300 transition-colors"
-              >
-                LinkedIn →
+                OpenSearch Con India 2026
               </a>
               <span className="text-zinc-700">·</span>
               <a
