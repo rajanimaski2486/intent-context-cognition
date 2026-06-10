@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import OpenAI from "openai";
 import { getQueryById, parseJourneyStepId, getJourneyStep, type CorpusMode } from "@/lib/queries";
 import { getOpenSearchClient } from "@/lib/opensearch";
-import { resolveProvider, type ModelProvider, type ProviderConfig } from "@/lib/provider";
+import { resolveProvider, DEFAULT_PROVIDER, type ModelProvider, type ProviderConfig } from "@/lib/provider";
 
 const CHAR_DELAY_MS = 18;
 
@@ -129,18 +129,67 @@ async function storeTrace(
   });
 }
 
-// --- live NVIDIA trace (strict, cached) ---
+// --- live trace (NVIDIA-preferred, OpenAI fallback, cached) ---
 
-// Streams a live NVIDIA reasoning trace. On a cache hit it replays the stored
-// text; on a miss it streams from the model and stores the result. NVIDIA-strict:
-// no OpenAI or scripted fallback — a failure surfaces a short notice instead.
-async function streamNvidiaTrace(
+interface TraceRun {
+  ok: boolean;
+  text: string;
+  streamed: boolean; // any chars already emitted to the controller
+  error?: string;
+}
+
+// Streams one provider's live trace straight to the controller, accumulating the
+// full text so the caller can cache a successful primary run.
+async function runTraceProvider(
+  controller: ReadableStreamDefaultController<Uint8Array>,
+  encoder: TextEncoder,
   cfg: ProviderConfig,
+  displayText: string,
+  timeoutMs: number
+): Promise<TraceRun> {
+  const client = new OpenAI({ baseURL: cfg.baseURL, apiKey: cfg.apiKey });
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), timeoutMs);
+  let full = "";
+  try {
+    const stream = await client.chat.completions.create(
+      {
+        model: cfg.traceModel,
+        stream: true,
+        messages: [
+          { role: "system", content: TRACE_SYSTEM_PROMPT },
+          { role: "user", content: `Query: "${displayText}"` },
+        ],
+      },
+      { signal: abort.signal }
+    );
+    for await (const chunk of stream) {
+      const char = chunk.choices[0]?.delta?.content ?? "";
+      if (char) {
+        full += char;
+        controller.enqueue(encoder.encode(sse(char)));
+      }
+    }
+    clearTimeout(timer);
+    return { ok: true, text: full, streamed: full.length > 0 };
+  } catch (err) {
+    clearTimeout(timer);
+    return { ok: false, text: full, streamed: full.length > 0, error: (err as Error)?.message };
+  }
+}
+
+// Streams a live reasoning trace from `primary`, replaying a cached result on a
+// hit. On a primary failure that emitted nothing yet, it falls back to `fallback`
+// (OpenAI) so the trace still renders. Only a successful PRIMARY run is cached —
+// a transient fallback run is never frozen under the primary model's cache key.
+async function streamLiveTrace(
+  primary: ProviderConfig,
+  fallback: ProviderConfig | null,
   displayText: string,
   queryId: string,
   corpus: CorpusMode
 ): Promise<ReadableStream<Uint8Array>> {
-  const model = cfg.traceModel;
+  const model = primary.traceModel;
   const cacheKey = traceCacheKey(model, corpus, displayText);
 
   try {
@@ -152,51 +201,44 @@ async function streamNvidiaTrace(
   }
 
   const timeoutMs = parseInt(process.env.LLM_TIMEOUT_MS ?? "120000", 10);
-  const client = new OpenAI({ baseURL: cfg.baseURL, apiKey: cfg.apiKey });
   const encoder = new TextEncoder();
 
   return new ReadableStream({
     async start(controller) {
-      const abort = new AbortController();
-      const timer = setTimeout(() => abort.abort(), timeoutMs);
-      let full = "";
-      try {
-        const stream = await client.chat.completions.create(
-          {
-            model,
-            stream: true,
-            messages: [
-              { role: "system", content: TRACE_SYSTEM_PROMPT },
-              { role: "user", content: `Query: "${displayText}"` },
-            ],
-          },
-          { signal: abort.signal }
-        );
-        for await (const chunk of stream) {
-          const char = chunk.choices[0]?.delta?.content ?? "";
-          if (char) {
-            full += char;
-            controller.enqueue(encoder.encode(sse(char)));
-          }
-        }
-        clearTimeout(timer);
-        if (full.trim()) {
+      const run = await runTraceProvider(controller, encoder, primary, displayText, timeoutMs);
+      if (run.ok) {
+        if (run.text.trim()) {
           try {
-            await storeTrace(cacheKey, model, corpus, queryId, displayText, full);
+            await storeTrace(cacheKey, model, corpus, queryId, displayText, run.text);
           } catch (err) {
             console.error("trace_cache_write_failed", (err as Error)?.message);
           }
         }
-      } catch (err) {
-        clearTimeout(timer);
-        console.error("nvidia_trace_failed", queryId, (err as Error)?.message);
-        for (const char of "⚠ NVIDIA trace unavailable — model call failed.") {
-          controller.enqueue(encoder.encode(sse(char)));
-        }
-      } finally {
         controller.enqueue(encoder.encode("data: [DONE]\n\n"));
         controller.close();
+        return;
       }
+
+      console.error("primary_trace_failed", queryId, run.error);
+      // Fall back to OpenAI only if nothing streamed yet (so we don't splice a
+      // second trace onto a half-emitted one).
+      if (fallback && !run.streamed) {
+        const fb = await runTraceProvider(controller, encoder, fallback, displayText, timeoutMs);
+        if (fb.ok) {
+          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+          controller.close();
+          return;
+        }
+        console.error("fallback_trace_failed", queryId, fb.error);
+      }
+
+      if (!run.streamed) {
+        for (const char of "⚠ Live trace unavailable — model call failed.") {
+          controller.enqueue(encoder.encode(sse(char)));
+        }
+      }
+      controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+      controller.close();
     },
   });
 }
@@ -226,7 +268,7 @@ function resolveTraceSource(
 export async function streamTrace(
   queryId: string,
   corpus: CorpusMode = "standard",
-  provider: ModelProvider = "current"
+  provider: ModelProvider = DEFAULT_PROVIDER
 ): Promise<ReadableStream<Uint8Array>> {
   const source = resolveTraceSource(queryId, corpus);
   if (!source) {
@@ -240,10 +282,15 @@ export async function streamTrace(
     return streamScriptedTrace(steps);
   }
 
-  // "nvidia": live llama-3.1-8b-instruct, strict (no fallback), cached.
-  const cfg = resolveProvider("nvidia");
-  if (!cfg.apiKey) {
-    return streamTextTypewriter("⚠ NVIDIA trace unavailable — NVIDIA_API_KEY is not set.");
+  // "nvidia" (default): prefer the live NVIDIA trace; fall back to a live OpenAI
+  // trace when NVIDIA's key is missing or its call fails; scripted as last resort.
+  const nvidia = resolveProvider("nvidia");
+  const openai = resolveProvider("current");
+  if (nvidia.apiKey) {
+    return streamLiveTrace(nvidia, openai.apiKey ? openai : null, displayText, queryId, corpus);
   }
-  return streamNvidiaTrace(cfg, displayText, queryId, corpus);
+  if (openai.apiKey) {
+    return streamLiveTrace(openai, null, displayText, queryId, corpus);
+  }
+  return streamScriptedTrace(steps);
 }

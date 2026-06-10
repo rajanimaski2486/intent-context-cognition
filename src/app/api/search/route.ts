@@ -24,7 +24,7 @@ import {
 } from "@/lib/rerank";
 import { embedQuery, EMBEDDING_MODEL } from "@/lib/embed";
 import { validateQueryText } from "@/lib/guardrails";
-import type { ModelProvider } from "@/lib/provider";
+import { resolveEffectiveProvider, type ModelProvider } from "@/lib/provider";
 
 // Candidate pool the LLM reranker judges before we return the top 6.
 const RERANK_POOL_SIZE = 50;
@@ -47,7 +47,7 @@ const RequestSchema = z.object({
   session_vector: z.array(z.number()).optional(),
   journey_session: z.boolean().optional(),
   layers: LayersSchema.optional(),
-  provider: z.enum(["current", "nvidia"]).default("current"),
+  provider: z.enum(["current", "nvidia"]).default("nvidia"),
 });
 
 export type Layers = z.infer<typeof LayersSchema>;
@@ -268,10 +268,14 @@ async function applyRerank(
   candidates: ImageResult[],
   provider: ModelProvider
 ): Promise<{ results: ImageResult[]; rerank: SearchTrace["rerank"] }> {
-  const model = rerankModelName(provider);
+  // NVIDIA is preferred; if its key is missing we fall back to OpenAI here so the
+  // model name, pool size, cache key, and the actual rerank call all stay in sync
+  // (otherwise we'd cache under one model but look up under another).
+  const effective = resolveEffectiveProvider(provider);
+  const model = rerankModelName(effective);
   // NVIDIA scores one image per request, so judge only the top hybrid hits;
   // OpenAI ranks the whole pool holistically in a single call.
-  const pool = provider === "nvidia" ? candidates.slice(0, NVIDIA_RERANK_POOL) : candidates;
+  const pool = effective === "nvidia" ? candidates.slice(0, NVIDIA_RERANK_POOL) : candidates;
   const considered = pool.length;
   const base: SearchTrace["rerank"] = {
     applied: false,
@@ -305,7 +309,7 @@ async function applyRerank(
           thumbnail_url: c.thumbnail_url,
           medium_url: c.medium_url,
         })),
-        provider
+        effective
       );
       if (rankedIds) {
         await storeRerank(cacheKey, corpus, queryId, queryText, rankedIds, model);

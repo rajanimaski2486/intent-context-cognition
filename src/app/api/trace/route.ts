@@ -11,7 +11,7 @@ import { streamTrace, streamScriptedTrace } from "@/lib/llm";
 const RequestSchema = z.object({
   query_id: z.string(),
   corpus: z.enum(["standard", "extended"]).default("standard"),
-  provider: z.enum(["current", "nvidia"]).default("current"),
+  provider: z.enum(["current", "nvidia"]).default("nvidia"),
 });
 
 export async function POST(req: NextRequest) {
