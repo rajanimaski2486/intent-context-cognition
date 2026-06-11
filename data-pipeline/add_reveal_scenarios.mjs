@@ -143,6 +143,81 @@ const JOURNEYS = [
       }),
     ],
   },
+  {
+    id: "journey_f",
+    label: "Lifestyle Photographer",
+    subtitle: "A family story, unposed",
+    steps: [
+      step(1, "intent", "Togetherness, not a pose", "Closeness as a feeling, not a setup.", "togetherness that feels real, not posed", "family together", { signal_labels: ["mood over pose", "no studio keyword"] }),
+      step(2, "context", "Adding a child", "The session keeps the candid register and adds a child.", "add a child, but keep it candid", "family child home", { signal_labels: ["session-conditioned", "candid preserved"] }),
+      step(3, "cognition", "Resolving the brief", "Joyful and unstaged pull apart. The agent excludes the staged-studio cluster the expansion drags in.", "make it joyful but not staged", "family lifestyle", {
+        bm25_expansion: "studio posed portrait party props confetti backdrop",
+        filters: [{ type: "exclude_tags", tags: ["studio", "posed", "party", "props", "backdrop"], label: "exclude staged-studio cluster" }],
+        signal_labels: ["conflicting modifiers", "agent decomposes", "candid register", "intersection retrieval"],
+        trace_template: { steps: [
+          "Query received. Parsing modifier structure...",
+          "Conflicting modifiers: [joyful] vs [not staged].",
+          "Session context active: real, candid, family-at-home register.",
+          "Keyword expansion drifted toward: studio, posed, party, props.",
+          "Building exclusion for the staged-studio cluster...",
+          "Routing to k-NN with session vector weight applied...",
+          "Filtering out posed, backdrop-heavy imagery...",
+          "Re-ranking by intersection: joyful AND lived-in, not arranged...",
+          "Returning top 6. Joy that nobody asked to smile for.",
+        ] },
+      }),
+    ],
+  },
+  {
+    id: "journey_g",
+    label: "Music Editor",
+    subtitle: "A live-music story finds its pulse",
+    steps: [
+      step(1, "intent", "Intimate, not a stadium", "Music as closeness, not scale.", "music that feels intimate, not a stadium", "music musician", { signal_labels: ["intimacy over scale", "no arena keyword"] }),
+      step(2, "context", "Adding a performer", "The session keeps the close register and adds a performer.", "add a performer, keep it close", "musician performing", { signal_labels: ["session-conditioned", "closeness preserved"] }),
+      step(3, "cognition", "Resolving the brief", "Electric and intimate pull apart. The agent excludes the stadium-spectacle cluster the expansion drags in.", "make it electric but not a spectacle", "live music", {
+        bm25_expansion: "arena crowd festival pyrotechnics laser stage lights",
+        filters: [{ type: "exclude_tags", tags: ["arena", "crowd", "festival", "pyrotechnics", "laser"], label: "exclude stadium-spectacle cluster" }],
+        signal_labels: ["conflicting modifiers", "agent decomposes", "intimate register", "intersection retrieval"],
+        trace_template: { steps: [
+          "Query received. Parsing modifier structure...",
+          "Conflicting modifiers: [electric] vs [not a spectacle].",
+          "Session context active: intimate, close, performer-in-the-room register.",
+          "Keyword expansion drifted toward: arena, crowd, festival, pyrotechnics.",
+          "Building exclusion for the stadium-spectacle cluster...",
+          "Routing to k-NN with session vector weight applied...",
+          "Filtering out arena-scale, crowd-heavy imagery...",
+          "Re-ranking by intersection: electric AND close enough to touch...",
+          "Returning top 6. Energy you could feel from the front row.",
+        ] },
+      }),
+    ],
+  },
+  {
+    id: "journey_h",
+    label: "Travel Editor",
+    subtitle: "A slow-travel story unfolds",
+    steps: [
+      step(1, "intent", "Slow, not a checklist", "Travel as a register, not an itinerary.", "travel that feels slow, not a checklist", "travel destination", { signal_labels: ["mood over itinerary", "no landmark keyword"] }),
+      step(2, "context", "Adding a traveler", "The session keeps the unhurried register and adds a traveler.", "add a traveler, keep them unhurried", "person traveling", { signal_labels: ["session-conditioned", "unhurried preserved"] }),
+      step(3, "cognition", "Resolving the brief", "Adventurous and unhurried pull apart. The agent excludes the crowded-tourist cluster the expansion drags in.", "make it adventurous but not touristy", "travel lifestyle", {
+        bm25_expansion: "landmark resort tour bus souvenir sightseeing crowd",
+        filters: [{ type: "exclude_tags", tags: ["landmark", "resort", "tourist", "souvenir", "sightseeing"], label: "exclude crowded-tourist cluster" }],
+        signal_labels: ["conflicting modifiers", "agent decomposes", "unhurried register", "intersection retrieval"],
+        trace_template: { steps: [
+          "Query received. Parsing modifier structure...",
+          "Conflicting modifiers: [adventurous] vs [not touristy].",
+          "Session context active: slow, unhurried, traveler-in-the-moment register.",
+          "Keyword expansion drifted toward: landmark, resort, tour bus, souvenir.",
+          "Building exclusion for the crowded-tourist cluster...",
+          "Routing to k-NN with session vector weight applied...",
+          "Filtering out postcard landmarks and resort imagery...",
+          "Re-ranking by intersection: adventurous AND off the beaten path...",
+          "Returning top 6. The trip you'd actually remember.",
+        ] },
+      }),
+    ],
+  },
 ];
 
 const indent = (str, n) => {
