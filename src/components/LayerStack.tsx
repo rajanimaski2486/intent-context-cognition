@@ -153,6 +153,26 @@ export default function LayerStack({ scenarios, corpus }: Props) {
   const [showTrace, setShowTrace] = useState(false);
   const fetched = useRef<Record<string, boolean>>({});
 
+  // Deep-link support (for sharing / capturing a specific layer):
+  //   ?layer=expansion|intent|context|cognition  and optional ?scenario=<journeyId>
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const sc = params.get("scenario");
+    if (sc) setScenarioId(sc);
+    const layer = params.get("layer");
+    if (layer) {
+      const idx = LAYER_DEFS.findIndex((l) => l.key === layer);
+      const lvl = idx >= 0 ? idx : Number(layer);
+      if (Number.isInteger(lvl) && lvl >= 0 && lvl < LAYER_DEFS.length) {
+        setLevel(lvl);
+        setReached(lvl);
+      }
+    }
+    // run once on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const scenario = scenarios.find((s) => s.journeyId === scenarioId) ?? scenarios[0];
 
   const fetchLevel = useCallback(
