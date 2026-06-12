@@ -115,7 +115,7 @@ function LayerStepper({
             <button
               onClick={() => isReachable && !loading && onSelect(i)}
               disabled={!isReachable || loading}
-              className={`flex-1 min-w-0 flex flex-col items-center gap-1.5 px-1 py-2 rounded-lg border text-center transition-colors ${
+              className={`flex-1 min-w-0 flex items-center justify-center gap-1.5 px-1.5 py-1.5 rounded-lg border text-center transition-colors ${
                 isActive
                   ? "border-green-600 bg-green-900/25 text-green-200"
                   : isOn
@@ -126,12 +126,11 @@ function LayerStepper({
               }`}
             >
               <span
-                className={`w-2.5 h-2.5 rounded-full border-2 ${
+                className={`w-2 h-2 rounded-full border-2 shrink-0 ${
                   isOn ? "border-green-500 bg-green-500" : "border-zinc-600 bg-transparent"
                 }`}
               />
-              <span className="text-[10px] sm:text-xs font-medium leading-tight">{def.tab}</span>
-              <span className="text-[9px] text-zinc-500 leading-tight hidden sm:block">{def.desc}</span>
+              <span className="text-[10px] sm:text-xs font-medium leading-tight truncate">{def.tab}</span>
             </button>
             {i < LAYER_DEFS.length - 1 && (
               <div className={`w-3 sm:w-6 h-px shrink-0 ${i < active ? "bg-green-700" : "bg-zinc-800"}`} />
@@ -245,23 +244,18 @@ export default function LayerStack({ scenarios, corpus }: Props) {
   return (
     <div className="flex flex-col gap-5">
       {/* Intro — frame what these are */}
-      <div className="flex flex-col gap-2">
+      <div className="flex flex-col">
         <h2 className="text-lg font-bold text-zinc-50 leading-tight">
           Generative Discovery on OpenSearch
           <span className="block text-sm font-medium text-zinc-300 mt-0.5">
             Queries requiring understanding, not just keywords
           </span>
         </h2>
-        <p className="text-xs text-zinc-300 leading-relaxed max-w-3xl border-l-2 border-green-700/70 bg-green-950/15 rounded-r pl-3 pr-2 py-1.5">
-          Each card is a short <span className="text-zinc-100 font-medium">conversation</span> built from
-          queries that describe a feeling, not a keyword. Pick one, then stack{" "}
-          <span className="text-zinc-100 font-medium">Intent → Context → Cognition</span> and watch keyword
-          search fall behind while Generative Discovery follows the meaning.
-        </p>
       </div>
 
-      {/* Query selector — lead with the query, not a persona */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+      {/* Query selector — lead with the query, not a persona. auto-rows-fr keeps
+          every card the same height across both rows. */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 auto-rows-fr gap-2">
         {scenarios.map((s) => {
           const opener = s.prior_thread[0] ?? s.display_text;
           const isActive = s.journeyId === scenarioId;
@@ -269,7 +263,7 @@ export default function LayerStack({ scenarios, corpus }: Props) {
             <button
               key={s.journeyId}
               onClick={() => selectScenario(s.journeyId)}
-              className={`text-left rounded-lg border px-3 py-2.5 flex flex-col gap-1.5 transition-colors ${
+              className={`h-full text-left rounded-lg border px-3 py-2 flex flex-col gap-1 transition-colors ${
                 isActive
                   ? "border-green-600 bg-green-900/20"
                   : "border-zinc-700 bg-zinc-900 hover:border-zinc-500 hover:bg-zinc-800"
@@ -282,7 +276,7 @@ export default function LayerStack({ scenarios, corpus }: Props) {
               >
                 &ldquo;{opener}&rdquo;
               </span>
-              <span className="text-[10px] text-zinc-500 uppercase tracking-wide">
+              <span className="text-[10px] text-zinc-500 uppercase tracking-wide mt-auto">
                 {s.subtitle} · 3-query thread
               </span>
             </button>
