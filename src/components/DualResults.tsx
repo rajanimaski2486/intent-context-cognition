@@ -82,8 +82,8 @@ export default function DualResults({ legacy, discovery, loading, precisionScore
         precisionScore={precisionScore}
       />
       <Panel
-        label="Generative Discovery"
-        sublabel="Hybrid · BM25 + vector · session"
+        label="Hybrid Search"
+        sublabel="BM25 + vector · session"
         results={discovery}
         loading={loading}
         variant="discovery"

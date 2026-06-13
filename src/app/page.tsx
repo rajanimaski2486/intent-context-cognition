@@ -270,8 +270,8 @@ function AppContent() {
             </button>
           </div>
           <p className="text-[11px] text-zinc-600">
-            Generative Discovery embeds your words and searches by meaning. Legacy search matches
-            keywords only.
+            Hybrid Search blends keyword (BM25) and vector matching to search by meaning. Legacy
+            search matches keywords only.
           </p>
         </form>
 
