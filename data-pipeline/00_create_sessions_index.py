@@ -17,7 +17,8 @@ Run: python 00_create_sessions_index.py
 import os
 
 from dotenv import load_dotenv
-from opensearchpy import OpenSearch, RequestsHttpConnection
+
+from _os_client import build_client
 
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", ".env.local"))
 
@@ -37,29 +38,8 @@ INDEX_BODY = {
 }
 
 
-def build_client() -> OpenSearch:
-    url = os.environ["OPENSEARCH_URL"].rstrip("/")
-    if url.startswith("https://"):
-        host, use_ssl = url[len("https://"):], True
-    elif url.startswith("http://"):
-        host, use_ssl = url[len("http://"):], False
-    else:
-        host, use_ssl = url, True
-
-    hostname, port = (host.rsplit(":", 1) if ":" in host else (host, "443" if use_ssl else "9200"))
-
-    return OpenSearch(
-        hosts=[{"host": hostname, "port": int(port)}],
-        http_auth=(os.environ["OPENSEARCH_USERNAME"], os.environ["OPENSEARCH_PASSWORD"]),
-        use_ssl=use_ssl,
-        verify_certs=True,
-        connection_class=RequestsHttpConnection,
-        timeout=30,
-    )
-
-
 def main() -> None:
-    client = build_client()
+    client = build_client(timeout=30)
     print("Connected to OpenSearch:", client.info()["version"]["number"])
 
     if client.indices.exists(index=INDEX_NAME):

@@ -32,36 +32,106 @@ function requireEnv(name: string): string {
   return val;
 }
 
+// Primary request timeout (ms). Short on purpose: under a traffic spike a
+// struggling-but-alive primary should trip failover in seconds, not wait out the
+// opensearch-js 30s default on every request. maxRetries:0 on the primary makes
+// the FIRST timeout/5xx/429 fail over instead of retrying the same dead node 3x.
+const PRIMARY_TIMEOUT_MS = parseInt(process.env.OPENSEARCH_PRIMARY_TIMEOUT_MS ?? "5000", 10);
+
+function buildClient(
+  url: string,
+  username: string,
+  password: string,
+  opts: { requestTimeout?: number; maxRetries?: number } = {}
+): Client {
+  // Aiven's console hands you a bare `host:port` with no scheme; default to
+  // https so a scheme-less URL (a very common copy-paste) still connects instead
+  // of throwing "Invalid protocol" inside new URL().
+  const normalized = /^https?:\/\//i.test(url) ? url : `https://${url}`;
+  const parsed = new URL(normalized);
+  parsed.username = encodeURIComponent(username);
+  parsed.password = encodeURIComponent(password);
+  return new Client({
+    node: parsed.toString(),
+    ssl: parsed.protocol === "https:" ? { rejectUnauthorized: true } : undefined,
+    ...(opts.requestTimeout !== undefined ? { requestTimeout: opts.requestTimeout } : {}),
+    ...(opts.maxRetries !== undefined ? { maxRetries: opts.maxRetries } : {}),
+  });
+}
+
 let _client: Client | null = null;
 
 export function getOpenSearchClient(): Client {
   if (_client) return _client;
-
-  const url = requireEnv("OPENSEARCH_URL");
-  const username = requireEnv("OPENSEARCH_USERNAME");
-  const password = requireEnv("OPENSEARCH_PASSWORD");
-
-  const parsed = new URL(url);
-  parsed.username = encodeURIComponent(username);
-  parsed.password = encodeURIComponent(password);
-
-  _client = new Client({
-    node: parsed.toString(),
-    ssl: parsed.protocol === "https:" ? { rejectUnauthorized: true } : undefined,
-  });
-
+  _client = buildClient(
+    requireEnv("OPENSEARCH_URL"),
+    requireEnv("OPENSEARCH_USERNAME"),
+    requireEnv("OPENSEARCH_PASSWORD"),
+    { requestTimeout: PRIMARY_TIMEOUT_MS, maxRetries: 0 }
+  );
   return _client;
 }
 
-// Idempotently register the hybrid fusion pipeline. Memoized per process so the
-// PUT runs at most once per server lifetime; self-heals if the cluster was
-// recreated. The PUT is idempotent, so concurrent first calls are harmless.
-let _pipelinePromise: Promise<void> | null = null;
+// Optional standby cluster (a second Aiven service kept in sync offline). Built
+// lazily, and only when all three OPENSEARCH_FALLBACK_* vars are present —
+// otherwise failover is a no-op and the app behaves exactly as before.
+let _fallbackClient: Client | null = null;
+let _fallbackResolved = false;
 
-export function ensureHybridPipeline(): Promise<void> {
-  if (_pipelinePromise) return _pipelinePromise;
-  const client = getOpenSearchClient();
-  _pipelinePromise = client.transport
+export function getFallbackClient(): Client | null {
+  if (_fallbackResolved) return _fallbackClient;
+  _fallbackResolved = true;
+  const url = process.env.OPENSEARCH_FALLBACK_URL;
+  const username = process.env.OPENSEARCH_FALLBACK_USERNAME;
+  const password = process.env.OPENSEARCH_FALLBACK_PASSWORD;
+  if (url && username && password) {
+    _fallbackClient = buildClient(url, username, password);
+  }
+  return _fallbackClient;
+}
+
+// A failure worth failing over for: a connection-level error (no HTTP status —
+// DNS, timeout, connection refused, the service powered off) or a server-side
+// overload (5xx, or 429 too-many-requests). A 4xx (auth, bad request, missing
+// index) is a config/data bug, not load, so we surface it rather than masking it
+// behind a fallback that would hit the same bug.
+function isFailoverError(err: unknown): boolean {
+  const status = (err as { meta?: { statusCode?: number } })?.meta?.statusCode;
+  if (status === undefined || status === null) return true;
+  return status >= 500 || status === 429;
+}
+
+// Run `fn` against the primary cluster; on a load/availability failure retry it
+// once against the fallback cluster (when one is configured). Any non-failover
+// error — or the absence of a fallback — propagates unchanged. Use this to wrap
+// the read path so a primary that's overwhelmed or down degrades to the standby
+// instead of failing the request.
+export async function withFailover<T>(fn: (client: Client) => Promise<T>): Promise<T> {
+  const primary = getOpenSearchClient();
+  try {
+    return await fn(primary);
+  } catch (err) {
+    const fallback = getFallbackClient();
+    if (!fallback || fallback === primary || !isFailoverError(err)) throw err;
+    console.warn("opensearch_failover", {
+      status: (err as { meta?: { statusCode?: number } })?.meta?.statusCode ?? "conn",
+      message: (err as Error)?.message,
+    });
+    return await fn(fallback);
+  }
+}
+
+// Idempotently register the hybrid fusion pipeline. Memoized per client so the
+// PUT runs at most once per cluster per server lifetime; self-heals if the
+// cluster was recreated. The PUT is idempotent, so concurrent first calls are
+// harmless. Keyed per client so the fallback cluster registers its own pipeline
+// the first time a request fails over to it.
+const _pipelinePromises = new WeakMap<Client, Promise<void>>();
+
+export function ensureHybridPipeline(client: Client = getOpenSearchClient()): Promise<void> {
+  const existing = _pipelinePromises.get(client);
+  if (existing) return existing;
+  const promise = client.transport
     .request({
       method: "PUT",
       path: `/_search/pipeline/${HYBRID_PIPELINE}`,
@@ -84,8 +154,9 @@ export function ensureHybridPipeline(): Promise<void> {
     .then(() => undefined)
     .catch((err) => {
       // Reset so a later request can retry, then surface the failure.
-      _pipelinePromise = null;
+      _pipelinePromises.delete(client);
       throw err;
     });
-  return _pipelinePromise;
+  _pipelinePromises.set(client, promise);
+  return promise;
 }

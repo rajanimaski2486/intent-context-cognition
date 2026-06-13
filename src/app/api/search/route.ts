@@ -2,8 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getQueryById, validateQueryId, parseJourneyStepId, getJourneyStep, type QueryFilter } from "@/lib/queries";
 import {
-  getOpenSearchClient,
   ensureHybridPipeline,
+  withFailover,
   CORPUS_CONFIG,
   HYBRID_PIPELINE,
   HYBRID_WEIGHTS,
@@ -12,7 +12,6 @@ import {
   type CorpusMode,
 } from "@/lib/opensearch";
 import {
-  ensureRerankIndex,
   computeCacheKey,
   getCachedRerank,
   storeRerank,
@@ -138,7 +137,6 @@ async function bm25Search(
   keywords: string
 ): Promise<{ results: ImageResult[]; query: object }> {
   if (!keywords.trim()) return { results: [], query: {} };
-  const client = getOpenSearchClient();
   const type = "best_fields" as const;
   const queryBody = {
     multi_match: {
@@ -147,10 +145,12 @@ async function bm25Search(
       type,
     },
   };
-  const resp = await client.search({
-    index,
-    body: { query: queryBody, size: 6 },
-  });
+  const resp = await withFailover((client) =>
+    client.search({
+      index,
+      body: { query: queryBody, size: 6 },
+    })
+  );
   return { results: parseHits(resp.body.hits.hits as Record<string, unknown>[]), query: queryBody };
 }
 
@@ -198,9 +198,6 @@ async function hybridSearch(
   keywords: string,
   filters?: QueryFilter[]
 ): Promise<{ results: ImageResult[]; query: object; filterLabels: string[] }> {
-  const client = getOpenSearchClient();
-  await ensureHybridPipeline();
-
   // The fusion pipeline's weights expect a fixed number of subqueries, so the
   // hybrid query always has exactly two: a BM25 slot (match_none when there are
   // no keywords — e.g. minimal-signal queries — so the vector leads) and kNN.
@@ -214,10 +211,15 @@ async function hybridSearch(
   const hybrid: Record<string, unknown> = { queries: subqueries };
   if (clause) hybrid.filter = clause;
 
-  const resp = await client.search({
-    index,
-    body: { size: RERANK_POOL_SIZE, query: { hybrid } },
-    search_pipeline: HYBRID_PIPELINE,
+  // Ensure the fusion pipeline exists on whichever cluster serves this query
+  // (primary, or the fallback if we fail over) before the hybrid search runs.
+  const resp = await withFailover(async (client) => {
+    await ensureHybridPipeline(client);
+    return client.search({
+      index,
+      body: { size: RERANK_POOL_SIZE, query: { hybrid } },
+      search_pipeline: HYBRID_PIPELINE,
+    });
   });
 
   // Display version with the dense vector truncated for the execution trace.
@@ -295,7 +297,6 @@ async function applyRerank(
   let status: RerankCacheStatus = "miss";
   let rankedIds: string[] | null = null;
   try {
-    await ensureRerankIndex();
     rankedIds = await getCachedRerank(cacheKey);
     if (rankedIds) {
       status = "hit";

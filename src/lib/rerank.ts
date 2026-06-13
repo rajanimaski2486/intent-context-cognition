@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import OpenAI from "openai";
-import { getOpenSearchClient } from "@/lib/opensearch";
+import type { Client } from "@opensearch-project/opensearch";
+import { getOpenSearchClient, withFailover } from "@/lib/opensearch";
 import { resolveProvider, type ModelProvider, type ProviderConfig } from "@/lib/provider";
 
 // NVIDIA NIM vision models take one image per request, so the NVIDIA reranker
@@ -43,12 +44,14 @@ function rerankDetail(): "low" | "high" | "auto" {
 
 // --- cache index ---
 
-let _indexPromise: Promise<void> | null = null;
+// Keyed per client so the fallback cluster gets the cache index created the
+// first time a rerank lookup fails over to it.
+const _indexPromises = new WeakMap<Client, Promise<void>>();
 
-export function ensureRerankIndex(): Promise<void> {
-  if (_indexPromise) return _indexPromise;
-  const client = getOpenSearchClient();
-  _indexPromise = client.indices
+export function ensureRerankIndex(client: Client = getOpenSearchClient()): Promise<void> {
+  const existing = _indexPromises.get(client);
+  if (existing) return existing;
+  const promise = client.indices
     .exists({ index: RERANK_INDEX })
     .then(async (res) => {
       if (res.body) return;
@@ -70,10 +73,11 @@ export function ensureRerankIndex(): Promise<void> {
       });
     })
     .catch((err) => {
-      _indexPromise = null;
+      _indexPromises.delete(client);
       throw err;
     });
-  return _indexPromise;
+  _indexPromises.set(client, promise);
+  return promise;
 }
 
 // Key on everything that determines the verdict: corpus, the natural-language
@@ -97,16 +101,20 @@ export function computeCacheKey(
 }
 
 export async function getCachedRerank(cacheKey: string): Promise<string[] | null> {
-  const client = getOpenSearchClient();
-  try {
-    const res = await client.get({ index: RERANK_INDEX, id: cacheKey });
-    const src = res.body._source as { ranked_image_ids?: string[] } | undefined;
-    return src?.ranked_image_ids ?? null;
-  } catch (err) {
-    const status = (err as { meta?: { statusCode?: number } })?.meta?.statusCode;
-    if (status === 404) return null;
-    throw err;
-  }
+  return withFailover(async (client) => {
+    await ensureRerankIndex(client);
+    try {
+      const res = await client.get({ index: RERANK_INDEX, id: cacheKey });
+      const src = res.body._source as { ranked_image_ids?: string[] } | undefined;
+      return src?.ranked_image_ids ?? null;
+    } catch (err) {
+      // A 404 here is a cache miss, not an outage — return null so withFailover
+      // does not treat it as a reason to fail over.
+      const status = (err as { meta?: { statusCode?: number } })?.meta?.statusCode;
+      if (status === 404) return null;
+      throw err;
+    }
+  });
 }
 
 export async function storeRerank(
@@ -117,20 +125,22 @@ export async function storeRerank(
   rankedImageIds: string[],
   model: string
 ): Promise<void> {
-  const client = getOpenSearchClient();
-  await client.index({
-    index: RERANK_INDEX,
-    id: cacheKey,
-    body: {
-      cache_key: cacheKey,
-      corpus,
-      query_id: queryId,
-      query_text: queryText,
-      ranked_image_ids: rankedImageIds,
-      model,
-      created_at: new Date().toISOString(),
-    },
-    refresh: true,
+  await withFailover(async (client) => {
+    await ensureRerankIndex(client);
+    return client.index({
+      index: RERANK_INDEX,
+      id: cacheKey,
+      body: {
+        cache_key: cacheKey,
+        corpus,
+        query_id: queryId,
+        query_text: queryText,
+        ranked_image_ids: rankedImageIds,
+        model,
+        created_at: new Date().toISOString(),
+      },
+      refresh: true,
+    });
   });
 }
 

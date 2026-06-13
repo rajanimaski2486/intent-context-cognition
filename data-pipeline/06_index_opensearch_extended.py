@@ -12,8 +12,10 @@ import json
 import os
 
 from dotenv import load_dotenv
-from opensearchpy import OpenSearch, RequestsHttpConnection, helpers
+from opensearchpy import OpenSearch, helpers
 from tqdm import tqdm
+
+from _os_client import build_client
 
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", ".env.local"))
 
@@ -55,35 +57,6 @@ INDEX_BODY = {
         }
     },
 }
-
-
-def build_client() -> OpenSearch:
-    url = os.environ["OPENSEARCH_URL"].rstrip("/")
-    if url.startswith("https://"):
-        host = url[len("https://"):]
-        use_ssl = True
-    elif url.startswith("http://"):
-        host = url[len("http://"):]
-        use_ssl = False
-    else:
-        host = url
-        use_ssl = True
-
-    if ":" in host:
-        hostname, port_str = host.rsplit(":", 1)
-        port = int(port_str)
-    else:
-        hostname = host
-        port = 443 if use_ssl else 9200
-
-    return OpenSearch(
-        hosts=[{"host": hostname, "port": port}],
-        http_auth=(os.environ["OPENSEARCH_USERNAME"], os.environ["OPENSEARCH_PASSWORD"]),
-        use_ssl=use_ssl,
-        verify_certs=True,
-        connection_class=RequestsHttpConnection,
-        timeout=60,
-    )
 
 
 def recreate_index(client: OpenSearch) -> None:
