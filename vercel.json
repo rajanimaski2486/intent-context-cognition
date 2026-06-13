@@ -3,5 +3,6 @@
     "src/app/api/**": {
       "maxDuration": 130
     }
-  }
+  },
+  "regions": ["sin1"]
 }
