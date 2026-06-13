@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import type { ImageResult, SearchTrace } from "@/app/api/search/route";
 import { CorpusProvider, CorpusToggle, useCorpus } from "@/components/CorpusToggle";
 import { ModelProviderProvider, ProviderToggle, useModelProvider } from "@/components/ProviderToggle";
@@ -88,6 +88,15 @@ function AppContent() {
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [showTrace, setShowTrace] = useState(false);
+
+  // Deep-link the top-level view for sharing/capture: ?view=search|reveal|eval
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const v = new URLSearchParams(window.location.search).get("view");
+    if (v === "search" || v === "reveal" || v === "eval") setView(v);
+    // run once on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const runSearch = async (text: string) => {
     const q = text.trim();

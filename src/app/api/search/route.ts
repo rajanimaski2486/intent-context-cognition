@@ -444,6 +444,9 @@ export interface LayeredTrace {
   rerank: SearchTrace["rerank"] | null;
   result_count: number;
   query: object;
+  // The single LLM-synthesized query the Context layer actually searched (when
+  // the synthesized vector was used). Null at other layers / when unavailable.
+  session_query: string | null;
 }
 
 // Cumulative layer view. Runs the retrieval pipeline UP TO the highest active
@@ -478,7 +481,21 @@ async function handleLayeredSearch({
   const baseKeywords = step.bm25_keywords ?? "";
   const expansion = step.bm25_expansion ?? "";
   const useVector = layers.intent || layers.context;
-  const vector = layers.context ? step.session_accumulated_embedding : step.embedding;
+  // Context prefers the LLM-synthesized session query (one resolved intent fused
+  // from all turns) over the averaged session vector — sharper, and it turns
+  // negations into positive descriptors instead of adding the excluded concept.
+  // Falls back to the averaged vector if the synthesized one isn't precomputed.
+  const sessionVector =
+    step.session_synthesized_embedding && step.session_synthesized_embedding.length
+      ? step.session_synthesized_embedding
+      : step.session_accumulated_embedding;
+  const vector = layers.context ? sessionVector : step.embedding;
+  // The resolved query the Context layer searched (only when the synthesized
+  // vector is the one in play) — surfaced in the trace + agent reasoning.
+  const sessionQuery =
+    layers.context && step.session_synthesized_embedding?.length
+      ? step.session_synthesized_text ?? null
+      : null;
 
   // Keyword-only baseline (layers: expansion only). Naive query expansion is
   // folded into the keyword string here — and nowhere else — so the audience
@@ -494,6 +511,7 @@ async function handleLayeredSearch({
       rerank: null,
       result_count: bm25.results.length,
       query: bm25.query,
+      session_query: null,
     };
     return NextResponse.json({
       query_id,
@@ -529,6 +547,7 @@ async function handleLayeredSearch({
     rerank: rerankTrace,
     result_count: results.length,
     query: hybrid.query,
+    session_query: sessionQuery,
   };
 
   return NextResponse.json({

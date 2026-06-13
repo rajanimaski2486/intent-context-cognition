@@ -25,7 +25,7 @@ const LAYER_DEFS = [
 const LAYER_MODIFICATION = [
   "Synonym expansion appended to the keywords. Pure lexical BM25 — no vector.",
   "Expansion dropped. Query meaning added as a dense vector (k-NN), fused with BM25.",
-  "Vector swapped for the session-accumulated embedding that carries the prior turns.",
+  "Vector swapped for one LLM-synthesized query that resolves the whole thread into a single intent (k-NN).",
   "Filter stage + LLM vision rerank applied on top of the session-conditioned hybrid.",
 ];
 
@@ -42,6 +42,7 @@ interface LayerTrace {
     returned: number;
   } | null;
   query: unknown;
+  session_query: string | null;
 }
 
 interface LayerData {
@@ -64,8 +65,13 @@ function layersForLevel(level: number) {
 function intentReason(current: string): string {
   return `read the request as meaning, not keywords — embed “${current}” so it matches on concept, not vocabulary.`;
 }
-function contextReason(priors: string[]): string {
+function contextReason(priors: string[], sessionQuery: string | null): string {
   const quoted = priors.map((p) => `“${p}”`).join(" + ");
+  if (sessionQuery) {
+    return priors.length
+      ? `resolve the whole thread — fuse the earlier turns (${quoted}) with this line into one intent, “${sessionQuery}”, and search that (negations become what you DO want), instead of just the last line.`
+      : `resolve the thread into one intent, “${sessionQuery}”, and search that instead of just the last line.`;
+  }
   return priors.length
     ? `fold in the session — blend the earlier turns (${quoted}) so results honour the whole thread, not just the last line.`
     : `fold in the session so results honour the whole thread, not just the last line.`;
@@ -340,7 +346,9 @@ export default function LayerStack({ scenarios, corpus }: Props) {
           </div>
           <div className="px-4 py-3 flex flex-col gap-2.5 font-mono text-[11px] leading-relaxed">
             <ReasonStep label="Intent" text={intentReason(scenario.display_text)} />
-            {level >= 2 && <ReasonStep label="Context" text={contextReason(scenario.prior_thread)} />}
+            {level >= 2 && (
+              <ReasonStep label="Context" text={contextReason(scenario.prior_thread, current?.trace?.session_query ?? null)} />
+            )}
             {level >= 3 && (
               <div className="flex flex-col gap-2">
                 <ReasonStep label="Cognition" text={cognitionReason(current?.trace?.filters_applied ?? [])} />
@@ -396,7 +404,9 @@ export default function LayerStack({ scenarios, corpus }: Props) {
                     current.trace.vector_source === "none"
                       ? "none (lexical only)"
                       : current.trace.vector_source === "session_vector"
-                      ? "session-accumulated embedding (k-NN)"
+                      ? current.trace.session_query
+                        ? "synthesized session query (k-NN)"
+                        : "session-accumulated embedding (k-NN)"
                       : "query embedding (k-NN)"
                   }
                 />

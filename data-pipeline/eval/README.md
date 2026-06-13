@@ -54,12 +54,32 @@ Options: `--corpus {standard,extended}`, `--k 10`, `--pool 10`, `--limit N`,
 - OpenSearch `icc_eval_judgments` - durable LLM grades (shared across machines)
 - `cache/judgments.json` - local mirror of the grades (delete to re-judge locally)
 
+## Context ablation: averaged vs synthesized session query
+
+`eval_context_synthesis.py` scores the Reveal **+ Context** layer two ways on the
+journeys (not the registry): the original **averaged** session vector
+(`session_accumulated_embedding`) vs the **synthesized** session query
+(`session_synthesized_embedding`, from `synthesize_context_queries.mjs`). Same
+offline hybrid retrieval, same judge — but the judge intent is the neutral 3-turn
+thread, so neither variant is graded against its own text.
+
+```bash
+python eval/eval_context_synthesis.py            # text judge (gpt-4o-mini)
+python eval/eval_context_synthesis.py --vision   # gpt-4o thumbnails (more faithful)
+python eval/eval_context_synthesis.py --dry-judge --k 6 --pool 6   # plumbing only
+```
+
+Result (standard corpus, text judge, k=10): synthesized beats averaged by
+**+0.111 nDCG@10** (0.633 → 0.744), improving 7 of 8 journeys. Outputs
+`results/context_synthesis.{md,json}` with a per-journey breakdown. journey_e is
+the one regression — its synthesis dropped specificity; a candidate for prompt
+tuning.
+
 ## Notes
 
 - `--dry-judge` derives grades from the hybrid ranking, so hybrid trivially wins.
   It only proves the pipeline runs - **use a real judge run for real numbers.**
 - Text judging reads `title`/`description`/`tags`; `--vision` judges the image
   itself and matches the app's gpt-4o vision rerank more closely.
-- Extending to **+ Context** (session-accumulated embedding) and **+ Cognition**
-  (vision rerank over the hybrid top-50) is the natural next step; the harness is
-  structured so each is an extra ranking added to `rank_layers`.
+- **+ Cognition** (vision rerank over the hybrid top-50) is the remaining layer to
+  add; the harness is structured so it's an extra ranking added to `rank_layers`.

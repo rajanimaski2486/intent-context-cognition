@@ -173,9 +173,9 @@ const JOURNEYS = [
     label: "Music Editor",
     subtitle: "A live-music story finds its pulse",
     steps: [
-      step(1, "intent", "Intimate, not a stadium", "Music as closeness, not scale.", "music that feels intimate, not a stadium", "music musician", { signal_labels: ["intimacy over scale", "no arena keyword"] }),
+      step(1, "intent", "Close, not a stadium", "Music as closeness, not scale.", "music that feels close, not a stadium", "music musician", { signal_labels: ["closeness over scale", "no arena keyword"] }),
       step(2, "context", "Adding a performer", "The session keeps the close register and adds a performer.", "add a performer, keep it close", "musician performing", { signal_labels: ["session-conditioned", "closeness preserved"] }),
-      step(3, "cognition", "Resolving the brief", "Electric and intimate pull apart. The agent excludes the stadium-spectacle cluster the expansion drags in.", "make it electric but not a spectacle", "live music", {
+      step(3, "cognition", "Resolving the brief", "Electric and close pull apart. The agent excludes the stadium-spectacle cluster the expansion drags in.", "a close-up live-music moment, electric but not a stadium spectacle", "live music", {
         bm25_expansion: "arena crowd festival pyrotechnics laser stage lights",
         filters: [{ type: "exclude_tags", tags: ["arena", "crowd", "festival", "pyrotechnics", "laser"], label: "exclude stadium-spectacle cluster" }],
         signal_labels: ["conflicting modifiers", "agent decomposes", "intimate register", "intersection retrieval"],

@@ -60,6 +60,12 @@ export interface JourneyStep {
   bm25_expansion?: string;
   embedding: number[];
   session_accumulated_embedding: number[];
+  // Context layer (preferred over the averaged session vector when present): a
+  // single LLM-reformulated query that fuses all prior turns into one resolved
+  // intent, then embedded. Avoids the smearing + negation-as-addition of vector
+  // averaging. Precomputed offline by data-pipeline/synthesize_context_queries.mjs.
+  session_synthesized_text?: string;
+  session_synthesized_embedding?: number[];
   session_accumulates: boolean;
   show_trace: boolean;
   trace_template: TraceTemplate | null;
